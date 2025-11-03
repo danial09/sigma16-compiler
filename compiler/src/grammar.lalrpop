@@ -1,0 +1,140 @@
+// compiler/src/grammar.lalrpop
+
+use crate::ast::*;
+use crate::lexer::{Token, LexicalError};
+
+grammar;
+
+extern {
+    type Location = usize;
+    type Error = LexicalError;
+
+    enum Token {
+        "If"      => Token::If,
+        "Else"    => Token::Else,
+        "While"   => Token::While,
+        "And"     => Token::And,
+        "Or"      => Token::Or,
+        "Not"     => Token::Not,
+
+        "Ident"   => Token::Ident(<String>),
+        "Number"  => Token::Number(<i64>),
+
+        "Assign"  => Token::Assign,
+        "Plus"    => Token::Plus,
+        "Minus"   => Token::Minus,
+        "Mul"     => Token::Mul,
+        "Div"     => Token::Div,
+
+        "Eq"      => Token::Eq,     // '=='
+        "Neq"     => Token::Neq,    // '!='
+        "Lt"      => Token::Lt,     // '<'
+        "Gt"      => Token::Gt,     // '>'
+
+        "LBrace"  => Token::LBrace,
+        "RBrace"  => Token::RBrace,
+        "LParen"  => Token::LParen,
+        "RParen"  => Token::RParen,
+    }
+}
+
+// ========== Entry Point ==========
+
+pub Program: Program =
+    <statements:Stmt*> => Program { statements };
+
+// ========== Statements ==========
+
+Stmt: Stmt = {
+    AssignStmt,
+    IfStmt,
+    WhileStmt,
+};
+
+AssignStmt: Stmt =
+    <name:"Ident"> "Assign" <value:ExprOr> => Stmt::Assign { 
+        name: name.into(), 
+        value 
+    };
+
+IfStmt: Stmt = {
+    "If" <condition:ExprOr> <then_branch:Block> =>
+        Stmt::If { condition, then_branch, else_branch: None },
+    
+    "If" <condition:ExprOr> <then_branch:Block> "Else" <else_branch:Block> =>
+        Stmt::If { condition, then_branch, else_branch: Some(else_branch) },
+};
+
+WhileStmt: Stmt =
+    "While" <condition:ExprOr> <body:Block> => Stmt::While { condition, body };
+
+Block: Vec<Stmt> =
+    "LBrace" <Stmt*> "RBrace";
+
+// ========== Expressions (Precedence Climbing) ==========
+
+// Lowest precedence: logical OR
+ExprOr: Expr = {
+    <left:ExprOr> "Or" <right:ExprAnd> =>
+        Expr::Binary { op: BinOp::Or, left: Box::new(left), right: Box::new(right) },
+    ExprAnd,
+};
+
+// Logical AND (higher precedence than OR)
+ExprAnd: Expr = {
+    <left:ExprAnd> "And" <right:ExprCmp> =>
+        Expr::Binary { op: BinOp::And, left: Box::new(left), right: Box::new(right) },
+    ExprCmp,
+};
+
+// Comparison operators (non-associative, but we allow chaining here)
+ExprCmp: Expr = {
+    <left:ExprAdd> <op:CmpOp> <right:ExprAdd> =>
+        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    ExprAdd,
+};
+
+CmpOp: BinOp = {
+    "Eq"  => BinOp::Eq,
+    "Neq" => BinOp::Neq,
+    "Lt"  => BinOp::Lt,
+    "Gt"  => BinOp::Gt,
+};
+
+// Addition and subtraction (left-associative)
+ExprAdd: Expr = {
+    <left:ExprAdd> <op:AddOp> <right:ExprMul> =>
+        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    ExprMul,
+};
+
+AddOp: BinOp = {
+    "Plus"  => BinOp::Add,
+    "Minus" => BinOp::Sub,
+};
+
+// Multiplication and division (left-associative)
+ExprMul: Expr = {
+    <left:ExprMul> <op:MulOp> <right:ExprUnary> =>
+        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    ExprUnary,
+};
+
+MulOp: BinOp = {
+    "Mul" => BinOp::Mul,
+    "Div" => BinOp::Div,
+};
+
+// Unary operators (higher precedence than binary operators)
+ExprUnary: Expr = {
+    "Not" <operand:ExprUnary> =>
+        Expr::Unary { op: UnOp::Not, operand: Box::new(operand) },
+    ExprPrimary,
+};
+
+// Highest precedence: primary expressions
+ExprPrimary: Expr = {
+    <n:"Number"> => Expr::Number(n.into()),
+    <v:"Ident">  => Expr::Variable(v.into()),
+    "LParen" <ExprOr> "RParen",
+};
