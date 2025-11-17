@@ -1,0 +1,842 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Compiler Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .editor-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 30px;
+        }
+
+        .panel {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .panel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .panel h2 {
+            color: #667eea;
+            font-size: 1.5em;
+            margin: 0;
+        }
+
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .checkbox-wrapper input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
+        .checkbox-wrapper label {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .source-editor {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            padding: 0;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            min-height: 400px;
+            background: #f9f9f9;
+            overflow: auto;
+        }
+
+        .source-line {
+            padding: 4px 15px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            line-height: 1.5;
+        }
+
+        .source-line:hover {
+            background: #e8f4ff;
+        }
+
+        .source-token {
+            cursor: pointer;
+            padding: 2px 0;
+            transition: background-color 0.1s;
+        }
+
+        .source-token:hover {
+            background: rgba(59, 130, 246, 0.15);
+            border-radius: 2px;
+        }
+
+        .source-line.highlighted {
+            background: #fef08a !important;
+        }
+
+        .output-box {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            padding: 0;
+            background: #f9f9f9;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            min-height: 400px;
+            overflow-y: auto;
+        }
+
+        .output-box.success {
+            background: #f0f9ff;
+            border-color: #0ea5e9;
+        }
+
+        .output-box.error {
+            background: #fef2f2;
+            border-color: #ef4444;
+            color: #dc2626;
+            padding: 15px;
+            white-space: pre-wrap;
+        }
+
+        .ir-line {
+            padding: 4px 15px;
+            cursor: pointer;
+            transition: background-color 0.15s;
+            white-space: pre;
+        }
+
+        .ir-line:hover {
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        /* Component-based color coding */
+        .ir-line.highlight-condition {
+            background: rgba(249, 115, 22, 0.25) !important;
+            border-left: 3px solid #f97316;
+            padding-left: 12px;
+        }
+
+        .ir-line.highlight-then {
+            background: rgba(34, 197, 94, 0.25) !important;
+            border-left: 3px solid #22c55e;
+            padding-left: 12px;
+        }
+
+        .ir-line.highlight-else {
+            background: rgba(239, 68, 68, 0.25) !important;
+            border-left: 3px solid #ef4444;
+            padding-left: 12px;
+        }
+
+        .ir-line.highlight-loop {
+            background: rgba(59, 130, 246, 0.25) !important;
+            border-left: 3px solid #3b82f6;
+            padding-left: 12px;
+        }
+
+        .ir-line.highlight-glue {
+            background: rgba(168, 85, 247, 0.25) !important;
+            border-left: 3px solid #a855f7;
+            padding-left: 12px;
+        }
+
+        .ir-line.highlight-default {
+            background: rgba(234, 179, 8, 0.25) !important;
+            border-left: 3px solid #eab308;
+            padding-left: 12px;
+        }
+
+        .ir-line.label {
+            color: #7c3aed;
+            font-weight: bold;
+        }
+
+        .ir-line.control-flow {
+            color: #dc2626;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .status {
+            font-size: 14px;
+            color: #666;
+            font-style: italic;
+        }
+
+        .status.loading {
+            color: #667eea;
+        }
+
+        .examples {
+            padding: 15px;
+            background: #f0f9ff;
+            border-radius: 8px;
+            border: 1px solid #0ea5e9;
+        }
+
+        .examples h3 {
+            color: #0369a1;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+
+        .example-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .example-btn {
+            padding: 8px 16px;
+            font-size: 13px;
+            background: white;
+            color: #0369a1;
+            border: 1px solid #0ea5e9;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .example-btn:hover {
+            background: #0ea5e9;
+            color: white;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .info-box {
+            padding: 12px;
+            background: #eff6ff;
+            border-left: 4px solid #3b82f6;
+            border-radius: 4px;
+            font-size: 14px;
+            color: #1e40af;
+        }
+
+        .legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 10px;
+            background: #f9fafb;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 12px;
+            border-radius: 2px;
+        }
+
+        @media (max-width: 768px) {
+            .editor-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+<!--        <h1>🚀 Interactive Compiler Demo</h1>-->
+        <h1>Interactive Compiler Demo</h1>
+        <p>From a Simple Programming Language to Low-Level IR</p>
+    </header>
+
+    <div class="editor-container">
+        <div class="panel">
+            <div class="panel-header">
+                <h2>📝 Source Code</h2>
+            </div>
+
+<!--            <div class="info-box">-->
+<!--                💡 <strong>Tip:</strong> Hover over individual tokens (keywords, variables, operators) to see precise IR mappings with color coding!-->
+<!--            </div>-->
+
+            <div class="examples">
+                <h3>Quick Examples:</h3>
+                <div class="example-buttons">
+                    <button class="example-btn" onclick="loadExample('simple')">Simple</button>
+                    <button class="example-btn" onclick="loadExample('ifelse')">If-Else</button>
+                    <button class="example-btn" onclick="loadExample('while')">While Loop</button>
+                    <button class="example-btn" onclick="loadExample('for')">For Loop</button>
+                    <button class="example-btn" onclick="loadExample('complex')">Complex</button>
+                </div>
+            </div>
+
+            <div class="source-editor" id="sourceEditor"></div>
+
+            <div class="button-group">
+                <button id="compileBtn" onclick="compileCode()">
+                    ▶️ Compile
+                </button>
+                <button onclick="clearAll()" style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);">
+                    🗑️ Clear
+                </button>
+                <span class="status" id="status"></span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-header">
+                <h2>⚙️ Generated IR</h2>
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="showLineNumbers" checked onchange="recompile()">
+                    <label for="showLineNumbers">Show line numbers</label>
+                </div>
+            </div>
+
+<!--            <div class="legend">-->
+<!--                <div class="legend-item">-->
+<!--                    <div class="legend-color" style="background: rgba(249, 115, 22, 0.5);"></div>-->
+<!--                    <span>Condition</span>-->
+<!--                </div>-->
+<!--                <div class="legend-item">-->
+<!--                    <div class="legend-color" style="background: rgba(34, 197, 94, 0.5);"></div>-->
+<!--                    <span>Then Branch</span>-->
+<!--                </div>-->
+<!--                <div class="legend-item">-->
+<!--                    <div class="legend-color" style="background: rgba(239, 68, 68, 0.5);"></div>-->
+<!--                    <span>Else Branch</span>-->
+<!--                </div>-->
+<!--                <div class="legend-item">-->
+<!--                    <div class="legend-color" style="background: rgba(59, 130, 246, 0.5);"></div>-->
+<!--                    <span>Loop Body</span>-->
+<!--                </div>-->
+<!--                <div class="legend-item">-->
+<!--                    <div class="legend-color" style="background: rgba(168, 85, 247, 0.5);"></div>-->
+<!--                    <span>Control Flow</span>-->
+<!--                </div>-->
+<!--            </div>-->
+
+            <div class="output-box" id="output">Compiled output will appear here...</div>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import init, { compile, version } from './pkg/compiler_wasm.js';
+
+    let wasmReady = false;
+    let lastCompiledResult = null;
+    let currentSource = `x = 5
+y = 10
+if x < y {
+    z = x + y
+} else {
+    z = x - y
+}
+while z > 0 {
+    z = z - 1
+    w = z * 2
+}
+result = z + 100
+for i from 1 to 10 {
+    result = result + i
+}`;
+
+    // Token patterns for syntax highlighting and parsing
+    const TOKEN_PATTERNS = [
+        { type: 'keyword', regex: /\b(if|else|while|for|from|to|and|or|not)\b/gi },
+        { type: 'operator', regex: /[=<>!+\-*/]+/g },
+        { type: 'number', regex: /\b\d+\b/g },
+        { type: 'identifier', regex: /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g },
+        { type: 'brace', regex: /[{}()]/g },
+    ];
+
+    async function initWasm() {
+        try {
+            setStatus('Loading WASM module...', 'loading');
+            await init();
+            wasmReady = true;
+            setStatus('Ready to compile! 🎉');
+            document.getElementById('compileBtn').disabled = false;
+
+            console.log('Compiler version:', version());
+
+            // Initialize with default code
+            updateSourceEditor();
+        } catch (error) {
+            setStatus('Failed to load WASM module: ' + error.message, 'error');
+            console.error('WASM initialization error:', error);
+        }
+    }
+
+    function tokenizeLine(line, lineIdx) {
+        if (!line.trim()) return '<span class="source-token" data-line="' + lineIdx + '">&nbsp;</span>';
+
+        const tokens = [];
+        let pos = 0;
+        const chars = line.split('');
+
+        while (pos < chars.length) {
+            // Try to match whitespace
+            if (/\s/.test(chars[pos])) {
+                const start = pos;
+                while (pos < chars.length && /\s/.test(chars[pos])) pos++;
+                tokens.push({
+                    type: 'whitespace',
+                    value: line.substring(start, pos),
+                    start,
+                    end: pos
+                });
+                continue;
+            }
+
+            // Try to match each token type
+            let matched = false;
+            for (const pattern of TOKEN_PATTERNS) {
+                const remaining = line.substring(pos);
+                const regex = new RegExp('^' + pattern.regex.source, pattern.regex.flags.replace('g', ''));
+                const match = remaining.match(regex);
+
+                if (match) {
+                    tokens.push({
+                        type: pattern.type,
+                        value: match[0],
+                        start: pos,
+                        end: pos + match[0].length
+                    });
+                    pos += match[0].length;
+                    matched = true;
+                    break;
+                }
+            }
+
+            if (!matched) {
+                // Unknown character, treat as single char
+                tokens.push({
+                    type: 'unknown',
+                    value: chars[pos],
+                    start: pos,
+                    end: pos + 1
+                });
+                pos++;
+            }
+        }
+
+        return tokens.map(token => {
+            const escaped = escapeHtml(token.value);
+            if (token.type === 'whitespace') {
+                return escaped;
+            }
+            return `<span class="source-token" data-line="${lineIdx}" data-start="${token.start}" data-end="${token.end}" data-type="${token.type}">${escaped}</span>`;
+        }).join('');
+    }
+
+    function updateSourceEditor() {
+        const editor = document.getElementById('sourceEditor');
+        const lines = currentSource.split('\n');
+        editor.innerHTML = lines.map((line, idx) =>
+            `<div class="source-line" data-line="${idx}">${tokenizeLine(line, idx)}</div>`
+        ).join('');
+    }
+
+    // Make the source editor editable
+    document.addEventListener('DOMContentLoaded', () => {
+        const editor = document.getElementById('sourceEditor');
+        editor.contentEditable = 'true';
+        editor.spellcheck = false;
+
+        // Update currentSource when user types
+        editor.addEventListener('input', () => {
+            const lines = Array.from(document.querySelectorAll('.source-line'))
+                .map(el => el.textContent);
+            currentSource = lines.join('\n');
+        });
+    });
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    window.compileCode = function() {
+        if (!wasmReady) {
+            alert('WASM module is not ready yet. Please wait...');
+            return;
+        }
+
+        const outputBox = document.getElementById('output');
+
+        if (!currentSource.trim()) {
+            outputBox.textContent = 'Please enter some code to compile.';
+            outputBox.className = 'output-box error';
+            lastCompiledResult = null;
+            return;
+        }
+
+        try {
+            setStatus('Compiling...', 'loading');
+            const result = compile(currentSource);
+            lastCompiledResult = result;
+
+            console.log('Compilation result:', result);
+            displayResult(result);
+        } catch (error) {
+            outputBox.textContent = '========== Unexpected Error ==========\n\n' + error.message;
+            outputBox.className = 'output-box error';
+            setStatus('❌ Unexpected error');
+            console.error('Compilation error:', error);
+            lastCompiledResult = null;
+        }
+    };
+
+    window.recompile = function() {
+        if (lastCompiledResult) {
+            displayResult(lastCompiledResult);
+        }
+    };
+
+    function displayResult(result) {
+        const outputBox = document.getElementById('output');
+        const showLineNumbers = document.getElementById('showLineNumbers').checked;
+
+        if (result.success && result.ir) {
+            outputBox.className = 'output-box success';
+            outputBox.innerHTML = '';
+
+            result.ir.forEach((line, idx) => {
+                const div = document.createElement('div');
+                div.className = 'ir-line';
+                div.dataset.instrIndex = idx;
+
+                // Add styling based on instruction type
+                if (line.trim().endsWith(':')) {
+                    div.classList.add('label');
+                } else if (line.includes('GOTO') || line.includes('if')) {
+                    div.classList.add('control-flow');
+                }
+
+                const displayLine = showLineNumbers
+                    ? `${String(idx+1).padStart(3, ' ')}: ${line}`
+                    : line;
+                div.textContent = displayLine;
+
+                outputBox.appendChild(div);
+            });
+
+            // Add hover effects if we have mapping data
+            if (result.source_map && result.ast_spans) {
+                addHoverEffects(result);
+            }
+
+            setStatus(`✅ Compiled successfully! (${result.ir.length} instructions)`);
+        } else {
+            outputBox.textContent = '========== Compilation Error ==========\n\n' + result.error;
+            outputBox.className = 'output-box error';
+            setStatus('❌ Compilation failed');
+        }
+    }
+
+    function getComponentHighlightClass(component) {
+        if (!component) return 'highlight-default';
+
+        switch (component) {
+            case 'Condition': return 'highlight-condition';
+            case 'ThenBranch': return 'highlight-then';
+            case 'ElseBranch': return 'highlight-else';
+            case 'LoopBody': return 'highlight-loop';
+            case 'ControlFlowGlue': return 'highlight-glue';
+            default: return 'highlight-default';
+        }
+    }
+
+    function addHoverEffects(result) {
+        const sourceTokens = document.querySelectorAll('.source-token');
+        const sourceLines = document.querySelectorAll('.source-line');
+        const irLines = document.querySelectorAll('.ir-line');
+        const mappings = result.source_map.mappings;
+        const astSpans = result.ast_spans;
+
+        // Token-level hover (most specific)
+        sourceTokens.forEach(token => {
+            token.addEventListener('mouseenter', (e) => {
+                const lineIdx = parseInt(token.dataset.line);
+
+                // Find AST node for this line
+                const astNode = astSpans.find(span =>
+                    lineIdx >= span.start_line && lineIdx <= span.end_line
+                );
+
+                if (astNode) {
+                    // Highlight source line
+                    sourceLines[lineIdx]?.classList.add('highlighted');
+
+                    // Get all IR instructions and group by component
+                    const irByComponent = {};
+                    mappings
+                        .filter(m => m.ast_node_id === astNode.ast_node_id)
+                        .forEach(m => {
+                            const comp = m.component || 'default';
+                            if (!irByComponent[comp]) irByComponent[comp] = [];
+                            irByComponent[comp].push(m.instr_index);
+                        });
+
+                    // Highlight IR lines with component-specific colors
+                    Object.entries(irByComponent).forEach(([component, indices]) => {
+                        const highlightClass = getComponentHighlightClass(component);
+                        indices.forEach(idx => {
+                            irLines[idx]?.classList.add(highlightClass);
+                        });
+                    });
+                }
+            });
+
+            token.addEventListener('mouseleave', clearHighlights);
+        });
+
+        // Line-level hover (fallback)
+        sourceLines.forEach((lineEl, lineIdx) => {
+            lineEl.addEventListener('mouseenter', (e) => {
+                // Only trigger if not hovering over a token
+                if (e.target.classList.contains('source-token')) return;
+
+                const astNode = astSpans.find(span =>
+                    lineIdx >= span.start_line && lineIdx <= span.end_line
+                );
+
+                if (astNode) {
+                    // Highlight all lines in this statement
+                    for (let i = astNode.start_line; i <= astNode.end_line; i++) {
+                        sourceLines[i]?.classList.add('highlighted');
+                    }
+
+                    // Highlight IR with components
+                    const irByComponent = {};
+                    mappings
+                        .filter(m => m.ast_node_id === astNode.ast_node_id)
+                        .forEach(m => {
+                            const comp = m.component || 'default';
+                            if (!irByComponent[comp]) irByComponent[comp] = [];
+                            irByComponent[comp].push(m.instr_index);
+                        });
+
+                    Object.entries(irByComponent).forEach(([component, indices]) => {
+                        const highlightClass = getComponentHighlightClass(component);
+                        indices.forEach(idx => {
+                            irLines[idx]?.classList.add(highlightClass);
+                        });
+                    });
+                }
+            });
+
+            lineEl.addEventListener('mouseleave', clearHighlights);
+        });
+
+        // IR hover (reverse mapping)
+        irLines.forEach((lineEl, instrIdx) => {
+            lineEl.addEventListener('mouseenter', () => {
+                const irMappings = mappings.filter(m => m.instr_index === instrIdx);
+
+                if (irMappings.length === 0) return;
+
+                // Get component for this instruction
+                const component = irMappings[0].component;
+                const highlightClass = getComponentHighlightClass(component);
+
+                const astNodeIds = [...new Set(irMappings.map(m => m.ast_node_id))];
+
+                // Highlight source lines
+                astNodeIds.forEach(astNodeId => {
+                    const span = astSpans.find(s => s.ast_node_id === astNodeId);
+                    if (span) {
+                        for (let i = span.start_line; i <= span.end_line; i++) {
+                            sourceLines[i]?.classList.add('highlighted');
+                        }
+                    }
+                });
+
+                // Highlight this IR line
+                lineEl.classList.add(highlightClass);
+            });
+
+            lineEl.addEventListener('mouseleave', clearHighlights);
+        });
+    }
+
+    function clearHighlights() {
+        document.querySelectorAll('.highlighted').forEach(el => el.classList.remove('highlighted'));
+        document.querySelectorAll('.ir-line').forEach(el => {
+            el.classList.remove('highlight-condition', 'highlight-then', 'highlight-else',
+                'highlight-loop', 'highlight-glue', 'highlight-default');
+        });
+    }
+
+    window.clearAll = function() {
+        currentSource = '';
+        updateSourceEditor();
+        document.getElementById('output').textContent = 'Compiled output will appear here...';
+        document.getElementById('output').className = 'output-box';
+        lastCompiledResult = null;
+        setStatus('Cleared');
+    };
+
+    window.loadExample = function(type) {
+        const examples = {
+            simple: `x = 5
+y = 10
+z = x + y`,
+
+            ifelse: `x = 5
+y = 10
+if x < y {
+    z = x + y
+} else {
+    z = x - y
+}`,
+
+            while: `counter = 10
+sum = 0
+while counter > 0 {
+    sum = sum + counter
+    counter = counter - 1
+}`,
+
+            for: `result = 0
+for i from 1 to 10 {
+    result = result + i
+}`,
+
+            complex: `x = 5
+y = 10
+if x < y {
+    z = x + y
+} else {
+    z = x - y
+}
+while z > 0 {
+    z = z - 1
+    w = z * 2
+}
+result = z + 100
+for i from 1 to 10 {
+    result = result + i
+}`
+        };
+
+        currentSource = examples[type] || examples.simple;
+        updateSourceEditor();
+        setStatus('Example loaded');
+    };
+
+    function setStatus(message, type = '') {
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = message;
+        statusEl.className = 'status ' + type;
+    }
+
+    // Initialize
+    document.getElementById('compileBtn').disabled = true;
+
+    // Set up editable source editor
+    const editor = document.getElementById('sourceEditor');
+    editor.contentEditable = 'true';
+    editor.spellcheck = false;
+
+    editor.addEventListener('input', () => {
+        const lines = Array.from(document.querySelectorAll('.source-line'))
+            .map(el => el.textContent);
+        currentSource = lines.join('\n');
+    });
+
+    initWasm();
+</script>
+</body>
+</html>

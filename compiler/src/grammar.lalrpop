@@ -1,9 +1,12 @@
+
 // compiler/src/grammar.lalrpop
 
 use crate::ast::*;
 use crate::lexer::{Token, LexicalError};
+use crate::ir::AstNodeId;
+use std::cell::RefCell;
 
-grammar;
+grammar(id_gen: &RefCell<AstNodeIdGenerator>);
 
 extern {
     type Location = usize;
@@ -13,6 +16,9 @@ extern {
         "If"      => Token::If,
         "Else"    => Token::Else,
         "While"   => Token::While,
+        "For"     => Token::For,
+        "From"    => Token::From,
+        "To"      => Token::To,
         "And"     => Token::And,
         "Or"      => Token::Or,
         "Not"     => Token::Not,
@@ -49,24 +55,42 @@ Stmt: Stmt = {
     AssignStmt,
     IfStmt,
     WhileStmt,
+    ForStmt,
 };
 
 AssignStmt: Stmt =
-    <name:"Ident"> "Assign" <value:ExprOr> => Stmt::Assign { 
-        name: name.into(), 
-        value 
+    <name:"Ident"> "Assign" <value:ExprOr> => {
+        let id = id_gen.borrow_mut().next();
+        Stmt::Assign { 
+            id,
+            name: name.into(), 
+            value 
+        }
     };
 
 IfStmt: Stmt = {
-    "If" <condition:ExprOr> <then_branch:Block> =>
-        Stmt::If { condition, then_branch, else_branch: None },
-    
-    "If" <condition:ExprOr> <then_branch:Block> "Else" <else_branch:Block> =>
-        Stmt::If { condition, then_branch, else_branch: Some(else_branch) },
+    "If" <condition:ExprOr> <then_branch:Block> => {
+        let id = id_gen.borrow_mut().next();
+        Stmt::If { id, condition, then_branch, else_branch: None }
+    },
+
+    "If" <condition:ExprOr> <then_branch:Block> "Else" <else_branch:Block> => {
+        let id = id_gen.borrow_mut().next();
+        Stmt::If { id, condition, then_branch, else_branch: Some(else_branch) }
+    },
 };
 
 WhileStmt: Stmt =
-    "While" <condition:ExprOr> <body:Block> => Stmt::While { condition, body };
+    "While" <condition:ExprOr> <body:Block> => {
+        let id = id_gen.borrow_mut().next();
+        Stmt::While { id, condition, body }
+    };
+
+ForStmt: Stmt =
+    "For" <var:"Ident"> "From" <from:ExprOr> "To" <to:ExprOr> <body:Block> => {
+        let id = id_gen.borrow_mut().next();
+        Stmt::For { id, var: var.into(), from, to, body }
+    };
 
 Block: Vec<Stmt> =
     "LBrace" <Stmt*> "RBrace";
@@ -75,22 +99,28 @@ Block: Vec<Stmt> =
 
 // Lowest precedence: logical OR
 ExprOr: Expr = {
-    <left:ExprOr> "Or" <right:ExprAnd> =>
-        Expr::Binary { op: BinOp::Or, left: Box::new(left), right: Box::new(right) },
+    <left:ExprOr> "Or" <right:ExprAnd> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Binary { id, op: BinOp::Or, left: Box::new(left), right: Box::new(right) }
+    },
     ExprAnd,
 };
 
 // Logical AND (higher precedence than OR)
 ExprAnd: Expr = {
-    <left:ExprAnd> "And" <right:ExprCmp> =>
-        Expr::Binary { op: BinOp::And, left: Box::new(left), right: Box::new(right) },
+    <left:ExprAnd> "And" <right:ExprCmp> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Binary { id, op: BinOp::And, left: Box::new(left), right: Box::new(right) }
+    },
     ExprCmp,
 };
 
 // Comparison operators (non-associative, but we allow chaining here)
 ExprCmp: Expr = {
-    <left:ExprAdd> <op:CmpOp> <right:ExprAdd> =>
-        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    <left:ExprAdd> <op:CmpOp> <right:ExprAdd> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
+    },
     ExprAdd,
 };
 
@@ -103,8 +133,10 @@ CmpOp: BinOp = {
 
 // Addition and subtraction (left-associative)
 ExprAdd: Expr = {
-    <left:ExprAdd> <op:AddOp> <right:ExprMul> =>
-        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    <left:ExprAdd> <op:AddOp> <right:ExprMul> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
+    },
     ExprMul,
 };
 
@@ -115,8 +147,10 @@ AddOp: BinOp = {
 
 // Multiplication and division (left-associative)
 ExprMul: Expr = {
-    <left:ExprMul> <op:MulOp> <right:ExprUnary> =>
-        Expr::Binary { op, left: Box::new(left), right: Box::new(right) },
+    <left:ExprMul> <op:MulOp> <right:ExprUnary> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
+    },
     ExprUnary,
 };
 
@@ -127,14 +161,22 @@ MulOp: BinOp = {
 
 // Unary operators (higher precedence than binary operators)
 ExprUnary: Expr = {
-    "Not" <operand:ExprUnary> =>
-        Expr::Unary { op: UnOp::Not, operand: Box::new(operand) },
+    "Not" <operand:ExprUnary> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Unary { id, op: UnOp::Not, operand: Box::new(operand) }
+    },
     ExprPrimary,
 };
 
 // Highest precedence: primary expressions
 ExprPrimary: Expr = {
-    <n:"Number"> => Expr::Number(n.into()),
-    <v:"Ident">  => Expr::Variable(v.into()),
+    <n:"Number"> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Number(id, n.into())
+    },
+    <v:"Ident"> => {
+        let id = id_gen.borrow_mut().next();
+        Expr::Variable(id, v.into())
+    },
     "LParen" <ExprOr> "RParen",
 };

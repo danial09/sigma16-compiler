@@ -1,5 +1,5 @@
 [workspace]
-members = ["compiler", "compiler-cli"]
+members = ["compiler", "compiler-cli", "compiler-wasm"]
 resolver = "2"
 
 [workspace.package]

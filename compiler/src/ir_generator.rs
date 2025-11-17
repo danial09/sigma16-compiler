@@ -1,3 +1,4 @@
+
 use crate::ast::{self, BinOp as AstBinOp, Expr, Program, Stmt};
 use crate::ir::*;
 
@@ -11,11 +12,20 @@ struct Gen {
     out: ProgramIR,
     temp_count: usize,
     label_count: usize,
+    current_ast_node: Option<(AstNodeId, Option<ControlFlowComponent>)>,
+    /// Track the parent control flow component (for nested statements)
+    parent_component: Option<ControlFlowComponent>,
 }
 
 impl Gen {
     fn new() -> Self {
-        Self { out: ProgramIR::new(), temp_count: 0, label_count: 0 }
+        Self {
+            out: ProgramIR::new(),
+            temp_count: 0,
+            label_count: 0,
+            current_ast_node: None,
+            parent_component: None,
+        }
     }
 
     fn finish(self) -> ProgramIR { self.out }
@@ -33,7 +43,54 @@ impl Gen {
     }
 
     fn emit(&mut self, i: Instr) {
+        let instr_index = self.out.instrs.len();
         self.out.instrs.push(i);
+
+        // Record the mapping if we're tracking an AST node
+        if let Some((ast_id, component)) = self.current_ast_node {
+            let description = self.generate_description(&self.out.instrs[instr_index]);
+            let mapping = AstMapping::new(ast_id, description);
+            // Use the explicit component if set, otherwise use parent component
+            let final_component = component.or(self.parent_component);
+            let mapping = if let Some(comp) = final_component {
+                mapping.with_component(comp)
+            } else {
+                mapping
+            };
+            self.out.source_map.add_mapping(instr_index, mapping);
+        }
+    }
+
+    fn generate_description(&self, instr: &Instr) -> String {
+        match instr {
+            Instr::Assign { dst, .. } => format!("Assign to {}", dst),
+            Instr::IfCmpGoto { .. } => "Conditional branch".to_string(),
+            Instr::IfFalseGoto { .. } => "False branch".to_string(),
+            Instr::Goto(_) => "Unconditional jump".to_string(),
+            Instr::Label(l) => format!("Label: {}", l),
+        }
+    }
+
+    fn with_ast_context<F, R>(&mut self, ast_id: AstNodeId, component: Option<ControlFlowComponent>, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let prev = self.current_ast_node;
+        self.current_ast_node = Some((ast_id, component));
+        let result = f(self);
+        self.current_ast_node = prev;
+        result
+    }
+
+    fn with_parent_component<F, R>(&mut self, component: ControlFlowComponent, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        let prev = self.parent_component;
+        self.parent_component = Some(component);
+        let result = f(self);
+        self.parent_component = prev;
+        result
     }
 
     // ========== Top-Level Lowering ==========
@@ -46,11 +103,18 @@ impl Gen {
 
     fn lower_stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Assign { name, value } => self.lower_assign(name, value),
-            Stmt::If { condition, then_branch, else_branch } => {
-                self.lower_if(condition, then_branch, else_branch.as_ref())
+            Stmt::Assign { id, name, value } => {
+                self.with_ast_context(*id, None, |g| g.lower_assign(name, value));
             }
-            Stmt::While { condition, body } => self.lower_while(condition, body),
+            Stmt::If { id, condition, then_branch, else_branch } => {
+                self.lower_if_tracked(*id, condition, then_branch, else_branch.as_ref());
+            }
+            Stmt::While { id, condition, body } => {
+                self.lower_while_tracked(*id, condition, body);
+            }
+            Stmt::For { id, var, from, to, body } => {
+                self.lower_for_tracked(*id, var, from, to, body);
+            }
         }
     }
 
@@ -58,9 +122,9 @@ impl Gen {
 
     fn lower_assign(&mut self, name: &str, rhs: &Expr) {
         let src = match rhs {
-            Expr::Number(n) => Rhs::Value(Value::Imm(*n)),
-            Expr::Variable(v) => Rhs::Value(Value::Var(v.clone())),
-            Expr::Binary { op, left, right } if is_arith(*op) => {
+            Expr::Number(_, n) => Rhs::Value(Value::Imm(*n)),
+            Expr::Variable(_, v) => Rhs::Value(Value::Var(v.clone())),
+            Expr::Binary { op, left, right, .. } if is_arith(*op) => {
                 let (l, r, aop) = self.lower_arith_expr(left, right, *op);
                 Rhs::Binary { op: aop, left: l, right: r }
             }
@@ -73,80 +137,188 @@ impl Gen {
         });
     }
 
-    fn lower_if(&mut self, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
+    fn lower_if_tracked(&mut self, ast_id: AstNodeId, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
         if is_simple_condition(cond) {
-            self.lower_if_simple(cond, then_blk, else_blk);
+            self.lower_if_simple_impl(Some(ast_id), cond, then_blk, else_blk);
         } else {
-            self.lower_if_complex(cond, then_blk, else_blk);
+            self.lower_if_complex_impl(Some(ast_id), cond, then_blk, else_blk);
         }
     }
 
-    fn lower_if_simple(&mut self, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
+    fn lower_if_simple_impl(&mut self, ast_id: Option<AstNodeId>, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
         let end_label = self.new_label();
         let else_label = else_blk.as_ref().map(|_| self.new_label());
         let target = else_label.as_ref().unwrap_or(&end_label);
 
-        self.emit_simple_branch_on_false(cond, target);
-        self.emit_block(then_blk);
+        // Emit condition check
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.emit_simple_branch_on_false(cond, target);
+        });
+
+        // Emit then branch with parent component tracking
+        self.with_optional_parent(ast_id.is_some().then_some(ControlFlowComponent::ThenBranch), |g| {
+            g.emit_block(then_blk);
+        });
 
         if let Some(label) = else_label {
-            self.emit(Instr::Goto(end_label.clone()));
-            self.emit(Instr::Label(label));
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+                g.emit(Instr::Goto(end_label.clone()));
+                g.emit(Instr::Label(label));
+            });
+
             if let Some(stmts) = else_blk {
-                self.emit_block(stmts);
+                self.with_optional_parent(ast_id.is_some().then_some(ControlFlowComponent::ElseBranch), |g| {
+                    g.emit_block(stmts);
+                });
             }
         }
 
-        self.emit(Instr::Label(end_label));
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Label(end_label));
+        });
     }
 
-    fn lower_if_complex(&mut self, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
-        let cond_temp = self.materialize_condition(cond);
+    fn lower_if_complex_impl(&mut self, ast_id: Option<AstNodeId>, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
+        let cond_temp = self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.materialize_condition(cond)
+        });
+
         let end_label = self.new_label();
         let else_label = else_blk.as_ref().map(|_| self.new_label());
         let target = else_label.as_ref().unwrap_or(&end_label).clone();
 
-        self.emit(Instr::IfCmpGoto {
-            left: cond_temp,
-            op: RelOp::Eq,
-            right: Value::Imm(0),
-            target,
-        });
-
-        self.emit_block(then_blk);
-
-        if let Some(label) = else_label {
-            self.emit(Instr::Goto(end_label.clone()));
-            self.emit(Instr::Label(label));
-            if let Some(stmts) = else_blk {
-                self.emit_block(stmts);
-            }
-        }
-
-        self.emit(Instr::Label(end_label));
-    }
-
-    fn lower_while(&mut self, cond: &Expr, body: &[Stmt]) {
-        let start = self.new_label();
-        let end = self.new_label();
-
-        self.emit(Instr::Label(start.clone()));
-
-        if is_simple_condition(cond) {
-            self.emit_simple_branch_on_false(cond, &end);
-        } else {
-            let cond_temp = self.materialize_condition(cond);
-            self.emit(Instr::IfCmpGoto {
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.emit(Instr::IfCmpGoto {
                 left: cond_temp,
                 op: RelOp::Eq,
                 right: Value::Imm(0),
-                target: end.clone(),
+                target,
+            });
+        });
+
+        self.with_optional_parent(ast_id.is_some().then_some(ControlFlowComponent::ThenBranch), |g| {
+            g.emit_block(then_blk);
+        });
+
+        if let Some(label) = else_label {
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+                g.emit(Instr::Goto(end_label.clone()));
+                g.emit(Instr::Label(label));
+            });
+
+            if let Some(stmts) = else_blk {
+                self.with_optional_parent(ast_id.is_some().then_some(ControlFlowComponent::ElseBranch), |g| {
+                    g.emit_block(stmts);
+                });
+            }
+        }
+
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Label(end_label));
+        });
+    }
+
+    fn lower_while_tracked(&mut self, ast_id: AstNodeId, cond: &Expr, body: &[Stmt]) {
+        self.lower_while_impl(Some(ast_id), cond, body);
+    }
+
+    fn lower_while_impl(&mut self, ast_id: Option<AstNodeId>, cond: &Expr, body: &[Stmt]) {
+        let start = self.new_label();
+        let end = self.new_label();
+
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Label(start.clone()));
+        });
+
+        if is_simple_condition(cond) {
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+                g.emit_simple_branch_on_false(cond, &end);
+            });
+        } else {
+            let cond_temp = self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+                g.materialize_condition(cond)
+            });
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+                g.emit(Instr::IfCmpGoto {
+                    left: cond_temp,
+                    op: RelOp::Eq,
+                    right: Value::Imm(0),
+                    target: end.clone(),
+                });
             });
         }
 
-        self.emit_block(body);
-        self.emit(Instr::Goto(start));
-        self.emit(Instr::Label(end));
+        self.with_optional_parent(ast_id.is_some().then_some(ControlFlowComponent::LoopBody), |g| {
+            g.emit_block(body);
+        });
+
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Goto(start));
+            g.emit(Instr::Label(end));
+        });
+    }
+
+    fn lower_for_tracked(&mut self, ast_id: AstNodeId, var: &str, from: &Expr, to: &Expr, body: &[Stmt]) {
+        // Initialize loop variable: var = from
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.lower_assign(var, from);
+        });
+
+        // Create labels
+        let start = self.new_label();
+        let end = self.new_label();
+
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Label(start.clone()));
+        });
+
+        // Check condition: if var >= to, goto end
+        let to_val = self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.eval_as_value(to)
+        });
+
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |g| {
+            g.emit(Instr::IfCmpGoto {
+                left: Value::Var(var.to_string()),
+                op: RelOp::Ge,
+                right: to_val,
+                target: end.clone(),
+            });
+        });
+
+        // Execute loop body
+        self.with_parent_component(ControlFlowComponent::LoopBody, |g| {
+            g.emit_block(body);
+        });
+
+        // Increment loop variable: var = var + 1
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Assign {
+                dst: var.to_string(),
+                src: Rhs::Binary {
+                    op: ArithOp::Add,
+                    left: Value::Var(var.to_string()),
+                    right: Value::Imm(1),
+                },
+            });
+        });
+
+        // Jump back to start
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |g| {
+            g.emit(Instr::Goto(start));
+            g.emit(Instr::Label(end));
+        });
+    }
+    fn lower_if(&mut self, cond: &Expr, then_blk: &[Stmt], else_blk: Option<&Vec<Stmt>>) {
+        if is_simple_condition(cond) {
+            self.lower_if_simple_impl(None, cond, then_blk, else_blk);
+        } else {
+            self.lower_if_complex_impl(None, cond, then_blk, else_blk);
+        }
+    }
+
+    fn lower_while(&mut self, cond: &Expr, body: &[Stmt]) {
+        self.lower_while_impl(None, cond, body);
     }
 
     fn emit_block(&mut self, stmts: &[Stmt]) {
@@ -155,14 +327,36 @@ impl Gen {
         }
     }
 
+    // ========== Helper Context Methods ==========
+
+    fn with_optional_context<F, R>(&mut self, ast_id: Option<AstNodeId>, component: Option<ControlFlowComponent>, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        match ast_id {
+            Some(id) => self.with_ast_context(id, component, f),
+            None => f(self),
+        }
+    }
+
+    fn with_optional_parent<F, R>(&mut self, component: Option<ControlFlowComponent>, f: F) -> R
+    where
+        F: FnOnce(&mut Self) -> R,
+    {
+        match component {
+            Some(comp) => self.with_parent_component(comp, f),
+            None => f(self),
+        }
+    }
+
     // ========== Simple Condition Branching ==========
 
     fn emit_simple_branch_on_false(&mut self, cond: &Expr, target: &str) {
         match cond {
-            Expr::Unary { op: ast::UnOp::Not, operand } => {
+            Expr::Unary { op: ast::UnOp::Not, operand, id: _id } => {
                 self.emit_simple_branch_on_true(operand, target);
             }
-            Expr::Binary { op, left, right } if is_rel(*op) => {
+            Expr::Binary { op, left, right, id: _id } if is_rel(*op) => {
                 let l = self.eval_as_value(left);
                 let r = self.eval_as_value(right);
                 self.emit(Instr::IfCmpGoto {
@@ -178,10 +372,10 @@ impl Gen {
 
     fn emit_simple_branch_on_true(&mut self, cond: &Expr, target: &str) {
         match cond {
-            Expr::Unary { op: ast::UnOp::Not, operand } => {
+            Expr::Unary { op: ast::UnOp::Not, operand, id: _ } => {
                 self.emit_simple_branch_on_false(operand, target);
             }
-            Expr::Binary { op, left, right } if is_rel(*op) => {
+            Expr::Binary { op, left, right, id: _id } if is_rel(*op) => {
                 let l = self.eval_as_value(left);
                 let r = self.eval_as_value(right);
                 self.emit(Instr::IfCmpGoto {
@@ -199,20 +393,20 @@ impl Gen {
 
     fn materialize_condition(&mut self, cond: &Expr) -> Value {
         match cond {
-            Expr::Number(n) => Value::Imm(*n),
-            Expr::Variable(v) => Value::Var(v.clone()),
+            Expr::Number(_, n) => Value::Imm(*n),
+            Expr::Variable(_, v) => Value::Var(v.clone()),
 
-            Expr::Unary { op: ast::UnOp::Not, operand } => self.materialize_not(operand),
+            Expr::Unary { op: ast::UnOp::Not, operand, id: _ } => self.materialize_not(operand),
 
-            Expr::Binary { op, left, right } if is_rel(*op) => {
+            Expr::Binary { op, left, right, id: _ } if is_rel(*op) => {
                 self.materialize_relational(left, right, *op)
             }
 
-            Expr::Binary { op: AstBinOp::And, left, right } => {
+            Expr::Binary { op: AstBinOp::And, left, right, id: _ } => {
                 self.materialize_and(left, right)
             }
 
-            Expr::Binary { op: AstBinOp::Or, left, right } => {
+            Expr::Binary { op: AstBinOp::Or, left, right, id: _ } => {
                 self.materialize_or(left, right)
             }
 
@@ -355,12 +549,12 @@ impl Gen {
 
     fn eval_as_value(&mut self, e: &Expr) -> Value {
         match e {
-            Expr::Number(n) => Value::Imm(*n),
-            Expr::Variable(v) => Value::Var(v.clone()),
+            Expr::Number(_, n) => Value::Imm(*n),
+            Expr::Variable(_, v) => Value::Var(v.clone()),
 
             Expr::Unary { op: ast::UnOp::Not, .. } => self.materialize_condition(e),
 
-            Expr::Binary { op, left, right } if is_arith(*op) => {
+            Expr::Binary { op, left, right, id: _ } if is_arith(*op) => {
                 let (l, r, aop) = self.lower_arith_expr(left, right, *op);
                 let t = self.new_temp();
                 self.emit(Instr::Assign {
@@ -386,8 +580,8 @@ impl Gen {
 
     fn eval_atom_or_complex(&mut self, e: &Expr) -> Value {
         match e {
-            Expr::Number(n) => Value::Imm(*n),
-            Expr::Variable(v) => Value::Var(v.clone()),
+            Expr::Number(_, n) => Value::Imm(*n),
+            Expr::Variable(_, v) => Value::Var(v.clone()),
             _ => self.eval_as_value(e),
         }
     }
@@ -398,7 +592,7 @@ impl Gen {
 fn is_simple_condition(e: &Expr) -> bool {
     match e {
         Expr::Binary { op, .. } if is_rel(*op) => true,
-        Expr::Unary { op: ast::UnOp::Not, operand } => is_simple_condition(operand),
+        Expr::Unary { op: ast::UnOp::Not, operand, id: _ } => is_simple_condition(operand),
         _ => false,
     }
 }

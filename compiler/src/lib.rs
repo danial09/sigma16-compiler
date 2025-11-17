@@ -1,6 +1,6 @@
 pub mod lexer;
 pub mod ast;
-mod ir;
+pub mod ir;
 pub mod ir_generator;
 
 use thiserror::Error;

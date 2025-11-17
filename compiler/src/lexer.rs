@@ -9,6 +9,9 @@ pub enum Token {
     #[token("if")] If,
     #[token("else")] Else,
     #[token("while")] While,
+    #[token("for")] For,
+    #[token("from")] From,
+    #[token("to")] To,
 
     #[token("and")] And,
     #[token("or")] Or,
