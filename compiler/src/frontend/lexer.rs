@@ -3,7 +3,8 @@ use std::fmt;
 
 #[derive(Logos, Debug, PartialEq, Eq, Hash, Clone)]
 #[logos(skip r"[ \t\r\n]+")]  // Whitespace
-#[logos(skip r"#[^\n]*")]     // Comments
+#[logos(skip r"#[^\n]*")]     // Shell-style comments starting with '#'
+#[logos(skip r"//[^\n]*")]    // C++-style line comments starting with '//'
 pub enum Token {
     // --- Keywords ---
     #[token("if")] If,
@@ -12,6 +13,11 @@ pub enum Token {
     #[token("for")] For,
     #[token("from")] From,
     #[token("to")] To,
+
+    // functions, returns, arrays
+    #[token("fn")] Fn,
+    #[token("return")] Return,
+    #[token("array")] Array,
 
     #[token("and")] And,
     #[token("or")] Or,
@@ -44,6 +50,9 @@ pub enum Token {
     #[token("]")] RBracket,
     #[token("(")] LParen,
     #[token(")")] RParen,
+    #[token(",")] Comma,
+    #[token("&")] Amp,
+    #[token(";")] Semicolon,
 }
 
 /// Custom error type for lexical errors

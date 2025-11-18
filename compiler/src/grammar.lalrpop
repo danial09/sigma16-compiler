@@ -1,12 +1,13 @@
 
 // compiler/src/grammar.lalrpop
 
-use crate::ast::*;
-use crate::lexer::{Token, LexicalError};
-use crate::ir::AstNodeId;
+use crate::ast::ast_ir::*;
+use crate::frontend::lexer::{Token, LexicalError};
+use crate::ir::AstNodeKind;
 use std::cell::RefCell;
 
-grammar(id_gen: &RefCell<AstNodeIdGenerator>);
+// Ignore 'Missing lifetime specifier' errors on below line if using the RustRover "lalrpop" plugin.
+grammar(id_gen: &RefCell<AstNodeIdGenerator>, spans: &RefCell<SpanCollector>);
 
 extern {
     type Location = usize;
@@ -19,6 +20,9 @@ extern {
         "For"     => Token::For,
         "From"    => Token::From,
         "To"      => Token::To,
+        "Fn"      => Token::Fn,
+        "Return"  => Token::Return,
+        "Array"   => Token::Array,
         "And"     => Token::And,
         "Or"      => Token::Or,
         "Not"     => Token::Not,
@@ -41,6 +45,11 @@ extern {
         "RBrace"  => Token::RBrace,
         "LParen"  => Token::LParen,
         "RParen"  => Token::RParen,
+        "LBracket" => Token::LBracket,
+        "RBracket" => Token::RBracket,
+        "Comma"    => Token::Comma,
+        "Amp"      => Token::Amp,
+        "Semicolon" => Token::Semicolon,
     }
 }
 
@@ -56,51 +65,94 @@ Stmt: Stmt = {
     IfStmt,
     WhileStmt,
     ForStmt,
+    ReturnStmt,
+    FunctionDef,
+    ArrayDeclStmt,
+    CallStmt,
 };
 
 AssignStmt: Stmt =
-    <name:"Ident"> "Assign" <value:ExprOr> => {
+    <l:@L> <target:LValue> "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
         let id = id_gen.borrow_mut().next();
-        Stmt::Assign { 
-            id,
-            name: name.into(), 
-            value 
-        }
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Assign);
+        Stmt::Assign { id, target, value }
+    };
+
+ArrayDeclStmt: Stmt =
+    <l:@L> "Array" <name:"Ident"> "LBracket" <n:"Number"> "RBracket" "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::ArrayDecl { id, name: name.into(), size: n as usize }
+    };
+
+FunctionDef: Stmt =
+    <l:@L> "Fn" <name:"Ident"> "LParen" <params:ParamList?> "RParen" <body:Block> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::Function { id, name: name.into(), params: params.unwrap_or_default(), body }
+    };
+
+ParamList: Vec<String> =
+    <first:"Ident"> <rest:("Comma" <"Ident">)*> => {
+        let mut v = Vec::new();
+        v.push(first.into());
+        for id in rest { v.push(id); }
+        v
     };
 
 IfStmt: Stmt = {
-    "If" <condition:ExprOr> <then_branch:Block> => {
+    <l:@L> "If" <condition:ExprOr> <then_branch:Block> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::If);
         Stmt::If { id, condition, then_branch, else_branch: None }
     },
 
-    "If" <condition:ExprOr> <then_branch:Block> "Else" <else_branch:Block> => {
+    <l:@L> "If" <condition:ExprOr> <then_branch:Block> "Else" <else_branch:Block> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::If);
         Stmt::If { id, condition, then_branch, else_branch: Some(else_branch) }
     },
 };
 
 WhileStmt: Stmt =
-    "While" <condition:ExprOr> <body:Block> => {
+    <l:@L> "While" <condition:ExprOr> <body:Block> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::While);
         Stmt::While { id, condition, body }
     };
 
 ForStmt: Stmt =
-    "For" <var:"Ident"> "From" <from:ExprOr> "To" <to:ExprOr> <body:Block> => {
+    <l:@L> "For" <var:"Ident"> "From" <from:ExprOr> "To" <to:ExprOr> <body:Block> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::For);
         Stmt::For { id, var: var.into(), from, to, body }
     };
 
 Block: Vec<Stmt> =
     "LBrace" <Stmt*> "RBrace";
 
+ReturnStmt: Stmt =
+    <l:@L> "Return" <value:ExprOr> "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Stmt::Return { id, value }
+    };
+
+// Standalone function call as statement (ignored return)
+CallStmt: Stmt =
+    <l:@L> <name:"Ident"> "LParen" <args:ArgList?> "RParen" "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::ExprStmt { id, expr: Expr::Call { id, name: name.into(), args: args.unwrap_or_default() } }
+    };
+
 // ========== Expressions (Precedence Climbing) ==========
 
 // Lowest precedence: logical OR
 ExprOr: Expr = {
-    <left:ExprOr> "Or" <right:ExprAnd> => {
+    <l:@L> <left:ExprOr> "Or" <right:ExprAnd> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op: BinOp::Or, left: Box::new(left), right: Box::new(right) }
     },
     ExprAnd,
@@ -108,8 +160,9 @@ ExprOr: Expr = {
 
 // Logical AND (higher precedence than OR)
 ExprAnd: Expr = {
-    <left:ExprAnd> "And" <right:ExprCmp> => {
+    <l:@L> <left:ExprAnd> "And" <right:ExprCmp> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op: BinOp::And, left: Box::new(left), right: Box::new(right) }
     },
     ExprCmp,
@@ -117,8 +170,9 @@ ExprAnd: Expr = {
 
 // Comparison operators (non-associative, but we allow chaining here)
 ExprCmp: Expr = {
-    <left:ExprAdd> <op:CmpOp> <right:ExprAdd> => {
+    <l:@L> <left:ExprAdd> <op:CmpOp> <right:ExprAdd> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
     },
     ExprAdd,
@@ -133,8 +187,9 @@ CmpOp: BinOp = {
 
 // Addition and subtraction (left-associative)
 ExprAdd: Expr = {
-    <left:ExprAdd> <op:AddOp> <right:ExprMul> => {
+    <l:@L> <left:ExprAdd> <op:AddOp> <right:ExprMul> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
     },
     ExprMul,
@@ -147,8 +202,9 @@ AddOp: BinOp = {
 
 // Multiplication and division (left-associative)
 ExprMul: Expr = {
-    <left:ExprMul> <op:MulOp> <right:ExprUnary> => {
+    <l:@L> <left:ExprMul> <op:MulOp> <right:ExprUnary> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op, left: Box::new(left), right: Box::new(right) }
     },
     ExprUnary,
@@ -161,22 +217,66 @@ MulOp: BinOp = {
 
 // Unary operators (higher precedence than binary operators)
 ExprUnary: Expr = {
-    "Not" <operand:ExprUnary> => {
+    <l:@L> "Not" <operand:ExprUnary> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
         Expr::Unary { id, op: UnOp::Not, operand: Box::new(operand) }
+    },
+    // Address-of a variable
+    <l:@L> "Amp" <v:"Ident"> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Expr::AddrOf(id, v.into())
+    },
+    // Dereference
+    <l:@L> "Mul" <operand:ExprUnary> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Expr::Deref(id, Box::new(operand))
     },
     ExprPrimary,
 };
 
-// Highest precedence: primary expressions
+// Primary expressions
 ExprPrimary: Expr = {
-    <n:"Number"> => {
+    // Indexing a[i] must appear before bare Ident to avoid ambiguity
+    <l:@L> <v:"Ident"> "LBracket" <idx:ExprOr> "RBracket" <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
+        Expr::Index { id, base: v.into(), index: Box::new(idx) }
+    },
+    // Function call: name(args)
+    <l:@L> <name:"Ident"> "LParen" <args:ArgList?> "RParen" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Expr::Call { id, name: name.into(), args: args.unwrap_or_default() }
+    },
+    <l:@L> <n:"Number"> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Number);
         Expr::Number(id, n.into())
     },
-    <v:"Ident"> => {
+    <l:@L> <v:"Ident"> <r:@R> => {
         let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
         Expr::Variable(id, v.into())
     },
     "LParen" <ExprOr> "RParen",
+};
+
+ArgList: Vec<Expr> =
+    <first:ExprOr> <rest:("Comma" <ExprOr>)*> => {
+        let mut v = Vec::new();
+        v.push(first);
+        for e in rest { v.push(e); }
+        v
+    };
+
+// LValue for assignment target
+LValue: LValue = {
+    <v:"Ident"> => LValue::Var(v.into()),
+    // *p
+    "Mul" <e:ExprUnary> => LValue::Deref(Box::new(e)),
+    // a[i]
+    <v:"Ident"> "LBracket" <idx:ExprOr> "RBracket" => LValue::Index { base: v.into(), index: idx },
 };

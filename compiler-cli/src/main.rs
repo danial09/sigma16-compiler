@@ -1,8 +1,11 @@
 
+use clap::{Parser, ValueEnum};
 use compiler::compile_to_ir;
-use clap::Parser;
+use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
 use std::fs;
 use std::path::PathBuf;
+
+mod tui;
 
 #[derive(Parser)]
 #[command(name = "compiler")]
@@ -14,10 +17,44 @@ struct Args {
     /// Enable source map testing and display
     #[arg(long)]
     test_source_map: bool,
+
+    /// Launch the interactive terminal UI
+    #[arg(long)]
+    tui: bool,
+
+    /// Emit IR (Intermediate Representation). If none of --ir/--asm/--both is given, defaults to --asm.
+    #[arg(long)]
+    ir: bool,
+
+    /// Emit Sigma16 assembly
+    #[arg(long)]
+    asm: bool,
+
+    /// Emit both IR and Sigma16 assembly
+    #[arg(long)]
+    both: bool,
+
+    /// Register allocation strategy for assembly generation
+    /// Options: basic, advanced (default: advanced)
+    #[arg(long, value_enum, default_value_t = AllocOpt::Advanced)]
+    alloc: AllocOpt,
 }
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum AllocOpt { Basic, Advanced }
 
 fn main() {
     let args = Args::parse();
+
+    if args.tui {
+        // Launch TUI mode
+        let initial_text = match &args.file {
+            Some(path) => fs::read_to_string(path).unwrap_or_default(),
+            None => DEFAULT_SAMPLE.trim().to_string(),
+        };
+        let _ = tui::run_tui(args.file, initial_text);
+        return;
+    }
 
     let src = if let Some(file_path) = args.file {
         fs::read_to_string(&file_path)
@@ -26,40 +63,35 @@ fn main() {
                 std::process::exit(1);
             })
     } else {
-        r#"
-x = 5
-y = 10
-if x < y {
-    z = x + y
-} else {
-    z = x - y
-}
-
-while z > 0 {
-    z = z - 1
-    w = z * 2
-}
-result = z + 100
-
-for i from 1 to 10 {
-  result = result + i
-}
-"#.trim().to_string()
+        DEFAULT_SAMPLE.trim().to_string()
     };
 
+    // Determine outputs
+    let mut want_ir = args.ir;
+    let mut want_asm = args.asm;
+    if args.both { want_ir = true; want_asm = true; }
+    if !want_ir && !want_asm { want_asm = true; } // default to assembly
+
+    // Compile to IR once
     let ir = compile_to_ir(&src).unwrap_or_else(|e| {
         eprintln!("Compilation error: {}", e);
         std::process::exit(1);
     });
 
-    println!("========== Generated IR ==========");
-    for (idx, line) in ir.to_lines().iter().enumerate() {
-        println!("{:3}: {}", idx, line);
+    // Conditionally print IR
+    if want_ir {
+        for (idx, line) in ir.to_lines().iter().enumerate() {
+            println!("{:3}: {}", idx, line);
+        }
+        println!();
+        if args.test_source_map { test_source_map(&ir); }
     }
-    println!();
 
-    if args.test_source_map {
-        test_source_map(&ir);
+    // Conditionally build and print assembly
+    if want_asm {
+        let kind = match args.alloc { AllocOpt::Basic => AllocatorKind::Basic, AllocOpt::Advanced => AllocatorKind::Advanced };
+        let asm = compile_ir_to_sigma16_with_allocator(kind, &ir);
+        println!("{}", asm);
     }
 }
 
@@ -189,4 +221,50 @@ fn test_source_map(ir: &compiler::ir::ProgramIR) {
         }
         println!();
     }
+
+    // Test 9: Position-based lookup (0-based line, column)
+    println!("Test 9: Position-based queries");
+    println!("--------------------------------");
+    let queries = [
+        (0usize, 0usize), // start of file
+        (3, 3),           // within an if condition, typically
+        (8, 4),           // inside loop body if present
+    ];
+    for (line, col) in queries {
+        if let Some(info) = ir.source_map.get_ast_info_at(line, col) {
+            let instrs = ir.source_map.get_instrs_for_ast(info.id);
+            println!(
+                "At (line {}, col {}): AST {:?} span=({}-{}), kind={:?}, IR instrs={:?}",
+                line,
+                col,
+                info.id,
+                info.span.start,
+                info.span.end,
+                info.kind,
+                instrs
+            );
+        } else {
+            println!("At (line {}, col {}): no AST node found", line, col);
+        }
+    }
 }
+
+const DEFAULT_SAMPLE: &str = r#"
+x = 5;
+y = 10;
+if x < y {
+    z = x + y;
+} else {
+    z = x - y;
+}
+
+while z > 0 {
+    z = z - 1;
+    w = z * x + 2;
+}
+result = z + 100;
+
+for i from 1 to 10 {
+  result = result + i;
+}
+"#;
