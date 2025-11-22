@@ -28,6 +28,8 @@ pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
     for s in parsed.spans {
         ir.source_map.add_ast_span(s.id, s.start, s.end, s.kind);
     }
+    // Populate mapping spans from the registered AST spans for robust lookups
+    ir.source_map.finalize();
     Ok(ir)
 }
 

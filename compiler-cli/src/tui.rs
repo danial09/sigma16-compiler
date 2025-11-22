@@ -1,4 +1,5 @@
 use std::io;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -14,8 +15,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Clear, W
 use ratatui::Terminal;
 use tui_textarea::{Input, Key, TextArea};
 
-use compiler::ir::{AstNodeId, AstNodeKind, ProgramIR};
-use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
+use compiler::ir::{AstNodeId, AstNodeKind, ProgramIR, ControlFlowComponent};
+use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind};
 
 pub fn run_tui(path: Option<PathBuf>, initial_text: String) -> Result<()> {
     // Setup terminal
@@ -51,6 +52,7 @@ struct App {
     ir: Option<ProgramIR>,
     ir_lines: Vec<String>,
     asm_lines: Vec<String>,
+    asm_ir_mapping: Vec<Option<usize>>, // per-ASM-line -> IR index (if any)
     // Cached AST spans by line for display
     ast_spans: Vec<(AstNodeId, usize, usize, AstNodeKind)>,
     // Selection within IR list
@@ -76,6 +78,7 @@ impl App {
             ir: None,
             ir_lines: Vec::new(),
             asm_lines: Vec::new(),
+            asm_ir_mapping: Vec::new(),
             ast_spans: Vec::new(),
             ir_selected: 0,
             last_compiled_at: None,
@@ -93,8 +96,9 @@ impl App {
                 self.ast_spans = ir.source_map.list_ast_spans_by_line();
                 self.last_error = None;
                 // Build assembly from the IR using Advanced allocator by default
-                let asm = compile_ir_to_sigma16_with_allocator(AllocatorKind::Advanced, &ir);
-                self.asm_lines = asm.lines().map(|s| s.to_string()).collect();
+                let asm = compile_ir_to_sigma16_with_allocator_mapped(AllocatorKind::Advanced, &ir);
+                self.asm_lines = asm.lines.clone();
+                self.asm_ir_mapping = asm.asm_ir_mapping.clone();
                 self.status = format!(
                     "Compiled successfully ({} IR instructions, {} ASM lines)",
                     self.ir_lines.len(),
@@ -109,6 +113,7 @@ impl App {
                 self.ir = None;
                 self.ir_lines.clear();
                 self.asm_lines.clear();
+                self.asm_ir_mapping.clear();
                 self.ast_spans.clear();
             }
         }
@@ -394,19 +399,131 @@ fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
 fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::with_capacity(app.ir_lines.len());
-    let mut highlight_ir: Vec<usize> = Vec::new();
+
+    // Two-tier highlighting:
+    // - stmt_set: IR instrs for the specific AST node under cursor (bold green)
+    // - block_set: IR instrs for the surrounding control-flow block (blue)
+    let mut stmt_set: HashSet<usize> = HashSet::new();
+    let mut block_set: HashSet<usize> = HashSet::new();
+
     if let Some(ir) = &app.ir {
-        // Highlight instructions mapped from current cursor position
         let (l, c) = app.cursor_pos_0();
-        highlight_ir = ir.source_map.get_instrs_at(l, c);
+
+        // Helper: prefer meaningful AST kinds for hover selection
+        fn preferred_kind(k: AstNodeKind) -> bool {
+            matches!(k, AstNodeKind::Binary | AstNodeKind::Unary | AstNodeKind::Assign | AstNodeKind::If | AstNodeKind::While | AstNodeKind::For)
+        }
+
+        // Choose best AST under cursor; if the direct node has no IR, climb to a containing node
+        let best_ast = if let Some(base) = ir.source_map.get_ast_info_at(l, c) {
+            // Start with what the compiler reports (already biased to nodes with IR when possible)
+            let mut chosen = base.clone();
+            let mut has_ir = !ir.source_map.get_instrs_for_ast(chosen.id).is_empty();
+            if !has_ir {
+                // Consider ancestors: spans that fully contain the base span
+                let mut candidates: Vec<(usize, AstNodeId, AstNodeKind)> = Vec::new();
+                for (id, s, e, kind) in &app.ast_spans {
+                    if *s <= base.span.start && base.span.end <= *e {
+                        let len = e - s;
+                        candidates.push((len, *id, *kind));
+                    }
+                }
+                // Prefer candidates with IR; among those, prefer preferred kinds; tie-break by smallest span
+                candidates.sort_by_key(|(len, _, _)| *len);
+                let mut pick: Option<AstNodeId> = None;
+                // Pass 1: has IR + preferred kind
+                for &(_, id, kind) in &candidates {
+                    if preferred_kind(kind) && !ir.source_map.get_instrs_for_ast(id).is_empty() { pick = Some(id); break; }
+                }
+                // Pass 2: has IR (any kind)
+                if pick.is_none() {
+                    for &(_, id, _) in &candidates {
+                        if !ir.source_map.get_instrs_for_ast(id).is_empty() { pick = Some(id); break; }
+                    }
+                }
+                if let Some(id) = pick {
+                    if let Some(info) = ir.source_map.get_ast_info_by_id(id) {
+                        chosen = info;
+                        has_ir = true;
+                    }
+                }
+            }
+            Some(chosen)
+        } else { None };
+
+        if let Some(ast_info) = best_ast {
+            // Primary: statement/expression-specific IR
+            for idx in ir.source_map.get_instrs_for_ast(ast_info.id) {
+                stmt_set.insert(idx);
+            }
+
+            // Infer which block component we're in from the mappings of the statement's IR
+            let mut comp_counts: HashMap<ControlFlowComponent, usize> = HashMap::new();
+            for &idx in &stmt_set {
+                for m in ir.source_map.get_mappings_for_instr(idx) {
+                    if let Some(comp) = m.component {
+                        match comp {
+                            ControlFlowComponent::ThenBranch | ControlFlowComponent::ElseBranch | ControlFlowComponent::LoopBody => {
+                                *comp_counts.entry(comp).or_insert(0) += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            let block_component: Option<ControlFlowComponent> = comp_counts
+                .into_iter()
+                .max_by_key(|(_, n)| *n)
+                .map(|(c, _)| c);
+
+            // Find the innermost enclosing control statement (If/While/For)
+            let mut control_span: Option<(usize, usize)> = None;
+            for (_, s, e, kind) in &app.ast_spans {
+                if *s <= ast_info.span.start && ast_info.span.end <= *e {
+                    if matches!(kind, AstNodeKind::If | AstNodeKind::While | AstNodeKind::For) {
+                        match control_span {
+                            Some((cs, ce)) => {
+                                if (*e - *s) < (ce - cs) { control_span = Some((*s, *e)); }
+                            }
+                            None => control_span = Some((*s, *e)),
+                        }
+                    }
+                }
+            }
+
+            if let (Some(comp), Some((cs, ce))) = (block_component, control_span) {
+                // Secondary: all IR in the same block component within the control span
+                for idx in 0..ir.instrs.len() {
+                    if stmt_set.contains(&idx) { continue; }
+                    let maps = ir.source_map.get_mappings_for_instr(idx);
+                    let in_block = maps.iter().any(|m| {
+                        if m.component != Some(comp) { return false; }
+                        if let Some(info) = ir.source_map.get_ast_info_by_id(m.ast_node_id) {
+                            info.span.start >= cs && info.span.end <= ce
+                        } else {
+                            false
+                        }
+                    });
+                    if in_block { block_set.insert(idx); }
+                }
+            }
+        } else {
+            // Fallback: if no AST node, highlight by position mapping as before
+            for idx in ir.source_map.get_instrs_at(l, c) { stmt_set.insert(idx); }
+        }
     }
+
+    // Render with layered styles: selection -> block (blue) -> statement (bold green)
     for (i, line) in app.ir_lines.iter().enumerate() {
         let mut style = Style::default();
         if i == app.ir_selected { style = style.fg(Color::Yellow); }
-        if highlight_ir.contains(&i) { style = style.add_modifier(Modifier::BOLD).fg(Color::Green); }
+        if block_set.contains(&i) { style = style.fg(Color::Blue); }
+        if stmt_set.contains(&i) { style = style.add_modifier(Modifier::BOLD).fg(Color::Green); }
         let text = format!("{:3}: {}", i, line);
         items.push(ListItem::new(text).style(style));
     }
+
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title("IR"));
     f.render_widget(list, area);
 }
@@ -429,7 +546,34 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
         let (l, c) = app.cursor_pos_0();
         if let Some(info) = ir.source_map.get_ast_info_at(l, c) {
             let instrs = ir.source_map.get_instrs_for_ast(info.id);
-            lines.push(Line::from(format!("Cursor at ({}, {}): AST id={} kind={:?} span=({}-{}) -> IR {:?}", l + 1, c + 1, info.id.0, info.kind, info.span.start, info.span.end, instrs)));
+            lines.push(Line::from(format!(
+                "Cursor at ({}, {}): AST id={} kind={:?} span=({}-{}) -> IR {:?}",
+                l + 1,
+                c + 1,
+                info.id.0,
+                info.kind,
+                info.span.start,
+                info.span.end,
+                instrs
+            )));
+
+            // Also show ASM lines corresponding to these IRs
+            if !app.asm_ir_mapping.is_empty() {
+                use std::collections::HashSet;
+                let set: HashSet<usize> = instrs.into_iter().collect();
+                let mut asm_lines_for_ast: Vec<usize> = Vec::new();
+                for (i, m) in app.asm_ir_mapping.iter().enumerate() {
+                    if let Some(mi) = m {
+                        if set.contains(mi) { asm_lines_for_ast.push(i); }
+                    }
+                }
+                if !asm_lines_for_ast.is_empty() {
+                    lines.push(Line::from(format!(
+                        "  -> ASM line idxs: {:?}",
+                        asm_lines_for_ast
+                    )));
+                }
+            }
         } else {
             lines.push(Line::from("Cursor not over any AST node."));
         }
@@ -439,7 +583,20 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
             let maps = ir.source_map.get_mappings_for_instr(idx);
             lines.push(Line::from(format!("Selected IR [{}]: {} mapping(s)", idx, maps.len())));
             for m in maps {
-                lines.push(Line::from(format!("  -> AST id={} component={:?} desc={}", m.ast_node_id.0, m.component, m.description)));
+                lines.push(Line::from(format!(
+                    "  -> AST id={} component={:?} desc={}",
+                    m.ast_node_id.0, m.component, m.description
+                )));
+            }
+            // Also show ASM lines where this IR appears
+            if !app.asm_ir_mapping.is_empty() {
+                let mut asm_lines_for_ir: Vec<usize> = Vec::new();
+                for (i, m) in app.asm_ir_mapping.iter().enumerate() {
+                    if matches!(m, Some(mi) if *mi == idx) { asm_lines_for_ir.push(i); }
+                }
+                if !asm_lines_for_ir.is_empty() {
+                    lines.push(Line::from(format!("  -> ASM line idxs: {:?}", asm_lines_for_ir)));
+                }
             }
         }
     } else {
@@ -460,11 +617,35 @@ fn draw_asm(f: &mut ratatui::Frame, app: &App, area: Rect) {
     if app.asm_lines.is_empty() {
         items.push(ListItem::new("<no ASM – compile (F5)>"));
     } else {
-        for line in &app.asm_lines {
-            items.push(ListItem::new(line.clone()));
+        // Build a set of IR indices related to AST under cursor for contextual highlight
+        let mut ast_related: HashSet<usize> = HashSet::new();
+        if let Some(ir) = &app.ir {
+            let (l, c) = app.cursor_pos_0();
+            if let Some(info) = ir.source_map.get_ast_info_at(l, c) {
+                for idx in ir.source_map.get_instrs_for_ast(info.id) {
+                    ast_related.insert(idx);
+                }
+            }
+        }
+
+        for (i, line) in app.asm_lines.iter().enumerate() {
+            let ir_map = app.asm_ir_mapping.get(i).cloned().unwrap_or(None);
+            let label = match ir_map { Some(ix) => format!("{:>4}", ix), None => "   -".to_string() };
+            let composed = format!("{}  {}", label, line);
+            let mut style = Style::default();
+            if let Some(ix) = ir_map {
+                if Some(ix) == Some(app.ir_selected) {
+                    style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+                } else if ast_related.contains(&ix) {
+                    style = style.fg(Color::Green);
+                }
+            } else {
+                style = style.fg(Color::DarkGray);
+            }
+            items.push(ListItem::new(composed).style(style));
         }
     }
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Assembly"));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Assembly  [col: IR index or '-']"));
     f.render_widget(list, area);
 }
 

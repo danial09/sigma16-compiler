@@ -3,15 +3,55 @@ use std::collections::HashSet;
 
 use super::regalloc::{is_temp, AdvancedRegAllocator, AllocatorKind, BasicRegAllocator, RegAllocator};
 
+/// Assembly output with a mapping from each ASM line to the originating IR instruction index (if any).
+/// Lines like headers, synthesized prologues/epilogues, and data definitions map to `None`.
+#[derive(Debug, Clone)]
+pub struct Sigma16Asm {
+    pub lines: Vec<String>,
+    /// `asm_ir_mapping[i]` is `Some(ir_index)` if the asm `lines[i]` was emitted
+    /// while lowering IR instruction `ir_index`; otherwise `None`.
+    pub asm_ir_mapping: Vec<Option<usize>>,
+}
+
+impl Sigma16Asm {
+    pub fn join(&self) -> String { self.lines.join("\n") }
+}
+
 /// Entry point: compile IR to Sigma16 assembly string.
 pub fn compile_ir_to_sigma16(ir: &ProgramIR) -> String {
+    let mut cg = Codegen::new(BasicRegAllocator::new());
+    cg.emit_program(ir);
+    let asm = cg.finish();
+    asm.join()
+}
+
+/// Compile using a specific allocator kind. Advanced allocator is a scaffold for now.
+pub fn compile_ir_to_sigma16_with_allocator(kind: AllocatorKind, ir: &ProgramIR) -> String {
+    match kind {
+        AllocatorKind::Basic => {
+            let mut cg = Codegen::new(BasicRegAllocator::new());
+            cg.emit_program(ir);
+            let asm = cg.finish();
+            asm.join()
+        }
+        AllocatorKind::Advanced => {
+            let mut cg = Codegen::new(AdvancedRegAllocator::new());
+            cg.emit_program(ir);
+            let asm = cg.finish();
+            asm.join()
+        }
+    }
+}
+
+/// Compile and also return an ASM-to-IR mapping for each emitted line.
+pub fn compile_ir_to_sigma16_mapped(ir: &ProgramIR) -> Sigma16Asm {
     let mut cg = Codegen::new(BasicRegAllocator::new());
     cg.emit_program(ir);
     cg.finish()
 }
 
-/// Compile using a specific allocator kind. Advanced allocator is a scaffold for now.
-pub fn compile_ir_to_sigma16_with_allocator(kind: AllocatorKind, ir: &ProgramIR) -> String {
+/// Compile with a specific allocator and get ASM with mapping.
+pub fn compile_ir_to_sigma16_with_allocator_mapped(kind: AllocatorKind, ir: &ProgramIR) -> Sigma16Asm {
     match kind {
         AllocatorKind::Basic => {
             let mut cg = Codegen::new(BasicRegAllocator::new());
@@ -28,6 +68,8 @@ pub fn compile_ir_to_sigma16_with_allocator(kind: AllocatorKind, ir: &ProgramIR)
 
 struct Codegen<R: RegAllocator> {
     out: Vec<String>,
+    /// Per-line mapping to the originating IR instruction index
+    out_map: Vec<Option<usize>>,
     reg: R,
     /// Set and order of user variables discovered
     user_vars: Vec<String>,
@@ -39,15 +81,18 @@ struct Codegen<R: RegAllocator> {
     /// Whether we emitted the program start label
     emitted_prog_start: bool,
     /// Per-function buffering to synthesize minimal prologue/epilogue
-    func_buf: Option<Vec<String>>, // buffered body of current function
+    func_buf: Option<Vec<(String, Option<usize>)>>, // buffered body of current function with mapping
     func_label: Option<String>,    // current function label
     func_makes_call: bool,         // whether current function performs any call
+    /// Current IR instruction index whose lowering is emitting code (None for synthesized lines)
+    current_ir: Option<usize>,
 }
 
 impl<R: RegAllocator> Codegen<R> {
     fn new(reg: R) -> Self {
         Self {
             out: Vec::new(),
+            out_map: Vec::new(),
             reg,
             user_vars: Vec::new(),
             user_vars_set: HashSet::new(),
@@ -57,13 +102,15 @@ impl<R: RegAllocator> Codegen<R> {
             func_buf: None,
             func_label: None,
             func_makes_call: false,
+            current_ir: None,
         }
     }
 
-    fn finish(mut self) -> String {
+    fn finish(mut self) -> Sigma16Asm {
         // If nobody caused us to place the program start label, emit it now to satisfy jump
         if !self.emitted_prog_start {
             self.out.push("__prog_start".to_string());
+            self.out_map.push(None);
         }
 
         // Close any in-progress top-level region for allocators and fix up stack-based spills.
@@ -81,10 +128,12 @@ impl<R: RegAllocator> Codegen<R> {
                 let adj = format!("  lea R13,{}[R13]", top_spills);
                 let insert_at = pos + 1;
                 self.out.insert(insert_at, adj);
+                self.out_map.insert(insert_at, None);
                 // Translate SPILL markers in the remainder of the top-level code
                 Codegen::<R>::translate_spill_markers(&mut self.out[insert_at + 1..], top_spills);
                 // Emit epilogue adjustment at the end of top-level code (before data section)
                 self.out.push(format!("  lea R13,-{}[R13]", top_spills));
+                self.out_map.push(None);
             }
         } else {
             // Even if there are no spills, clean up any stray markers defensively
@@ -103,21 +152,27 @@ impl<R: RegAllocator> Codegen<R> {
 
         // Emit static data section for discovered user variables and arrays
         self.out.push(String::new());
+        self.out_map.push(None);
         for v in &self.user_vars {
             // default-initialize to 0
             // Ensure there is always a space between the name and the directive
             self.out.push(format!("{:<8} data   0", v));
+            self.out_map.push(None);
         }
         // Emit arrays with N zeros
         for (name, len) in &self.arrays {
             self.out.push(format!("{}", name));
+            self.out_map.push(None);
             for _ in 0..*len {
                 self.out.push("     data   0".to_string());
+                self.out_map.push(None);
             }
         }
         // Append the stack base symbol always (even if there are no other symbols)
         self.out.push("stack   data   0".to_string());
-        self.out.join("\n")
+        self.out_map.push(None);
+
+        Sigma16Asm { lines: self.out, asm_ir_mapping: self.out_map }
     }
 
     fn emit_program(&mut self, ir: &ProgramIR) {
@@ -126,13 +181,16 @@ impl<R: RegAllocator> Codegen<R> {
         // Emit startup header once at the very top
         if !self.emitted_header {
             self.out.push("  lea R13,stack[R0]".to_string());
+            self.out_map.push(None);
             self.out.push("  jump __prog_start".to_string());
+            self.out_map.push(None);
             self.emitted_header = true;
             // Do NOT emit __prog_start here. We will lazily insert it the first
             // time we actually emit a top-level instruction (non-function code),
             // so that function definitions at the top don't get executed.
         }
-        for instr in &ir.instrs {
+        for (ir_index, instr) in ir.instrs.iter().enumerate() {
+            self.current_ir = Some(ir_index);
             match instr {
                 Instr::Label(lbl) => {
                     self.emit(lbl.clone());
@@ -255,6 +313,8 @@ impl<R: RegAllocator> Codegen<R> {
                 }
             }
         }
+        // Clear current ir after program emission
+        self.current_ir = None;
     }
 
     fn translate_spill_markers(lines: &mut [String], spills: usize) {
@@ -323,8 +383,9 @@ impl<R: RegAllocator> Codegen<R> {
     }
 
     fn emit<S: Into<String>>(&mut self, s: S) {
+        let line = s.into();
         if let Some(ref mut buf) = self.func_buf {
-            buf.push(s.into());
+            buf.push((line, self.current_ir));
         } else {
             // We are emitting at top-level (not inside a function). Ensure
             // the program start label is placed immediately before the first
@@ -332,17 +393,19 @@ impl<R: RegAllocator> Codegen<R> {
             // the first function definition.
             if !self.emitted_prog_start {
                 self.out.push("__prog_start".to_string());
+                self.out_map.push(None);
                 self.emitted_prog_start = true;
                 // Begin a new allocation region for top-level code
                 self.reg.begin_region();
             }
-            self.out.push(s.into());
+            self.out.push(line);
+            self.out_map.push(self.current_ir);
         }
     }
 
     fn flush_current_function(&mut self) {
         // Take the buffer and label out
-        let body = self.func_buf.take().unwrap_or_default();
+        let mut body = self.func_buf.take().unwrap_or_default();
         let label = self.func_label.take().unwrap_or_else(|| "__anon_fn".to_string());
         let makes_call = self.func_makes_call;
         self.func_makes_call = false;
@@ -351,11 +414,10 @@ impl<R: RegAllocator> Codegen<R> {
         let spills = self.reg.end_region();
 
         // Translate SPILL markers into stack-relative accesses
-        let mut body = body; // make mutable
-        Codegen::<R>::translate_spill_markers(&mut body[..], spills);
+        Self::translate_spill_markers_in_pairs(&mut body[..], spills);
 
         // Detect which callee-saved registers are used in the translated body (R9..R12)
-        let used_cs = Self::detect_used_callee_saved(&body);
+        let used_cs = Self::detect_used_callee_saved_pairs(&body);
         let mut saves: Vec<&'static str> = Vec::new();
         if makes_call { saves.push("R14"); }
         for rr in ["R9", "R10", "R11", "R12"].iter() {
@@ -364,32 +426,41 @@ impl<R: RegAllocator> Codegen<R> {
 
         let frame_slots = saves.len() + spills;
 
-        // Emit label
+        // Emit label (no mapping)
         self.out.push(label);
+        self.out_map.push(None);
 
         // Prologue
         if frame_slots > 0 {
             // Save callee-saved registers at offsets 0..saves-1
             for (i, reg) in saves.iter().enumerate() {
                 self.out.push(format!("  store {},{}[R13]", reg, i));
+                self.out_map.push(None);
             }
             // Reserve entire frame (saves + spills)
             self.out.push(format!("  lea R13,{}[R13]", frame_slots));
+            self.out_map.push(None);
         }
 
         // Body
-        self.out.extend(body);
+        for (line, map) in body.into_iter() {
+            self.out.push(line);
+            self.out_map.push(map);
+        }
 
         // Epilogue
         if frame_slots > 0 {
             // Release frame
             self.out.push(format!("  lea R13,-{}[R13]", frame_slots));
+            self.out_map.push(None);
             // Restore saved registers
             for (i, reg) in saves.iter().enumerate() {
                 self.out.push(format!("  load {},{}[R13]", reg, i));
+                self.out_map.push(None);
             }
         }
         self.out.push("  jr R14".to_string());
+        self.out_map.push(None);
     }
 
     fn detect_used_callee_saved(lines: &[String]) -> Vec<&'static str> {
@@ -426,5 +497,49 @@ impl<R: RegAllocator> Codegen<R> {
         if used[2] { out.push("R11"); }
         if used[3] { out.push("R12"); }
         out
+    }
+
+    fn translate_spill_markers_in_pairs(lines: &mut [(String, Option<usize>)], spills: usize) {
+        if spills == 0 {
+            for (line, _) in lines.iter_mut() {
+                if line.trim_start().starts_with("SPILL_STORE") || line.trim_start().starts_with("SPILL_LOAD") {
+                    *line = String::from("  ; spill eliminated");
+                }
+            }
+            return;
+        }
+        for (line, _) in lines.iter_mut() {
+            let current = line.clone();
+            let mut replaced = false;
+            let trimmed = current.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("SPILL_STORE ") {
+                let parts: Vec<&str> = rest.split(',').collect();
+                if parts.len() == 2 {
+                    let reg = parts[0].trim();
+                    if let Ok(idx) = parts[1].trim().parse::<usize>() {
+                        let disp = spills.saturating_sub(idx);
+                        *line = format!("  store {},-{}[R13]", reg, disp);
+                        replaced = true;
+                    }
+                }
+            }
+            if !replaced {
+                if let Some(rest) = trimmed.strip_prefix("SPILL_LOAD ") {
+                    let parts: Vec<&str> = rest.split(',').collect();
+                    if parts.len() == 2 {
+                        let reg = parts[0].trim();
+                        if let Ok(idx) = parts[1].trim().parse::<usize>() {
+                            let disp = spills.saturating_sub(idx);
+                            *line = format!("  load {},-{}[R13]", reg, disp);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn detect_used_callee_saved_pairs(lines: &[(String, Option<usize>)]) -> Vec<&'static str> {
+        let only_lines: Vec<String> = lines.iter().map(|(s, _)| s.clone()).collect();
+        Self::detect_used_callee_saved(&only_lines)
     }
 }

@@ -141,9 +141,11 @@ impl Gen {
                 let v = self.eval_as_value(value);
                 self.with_ast_context(*id, None, |this| this.emit(Instr::Return { value: Some(v) }));
             }
-            Stmt::ExprStmt { expr, .. } => {
-                // Evaluate and discard result
-                let _ = self.eval_as_value(expr);
+            Stmt::ExprStmt { id, expr } => {
+                // Evaluate and discard result, attribute to the statement id as context
+                self.with_ast_context(*id, None, |this| {
+                    let _ = this.eval_as_value(expr);
+                });
             }
         }
     }
@@ -183,6 +185,19 @@ impl Gen {
         if let Some(rhs_bin) = try_simple_binary {
             self.emit(Instr::Assign { dst: name.to_string(), src: rhs_bin });
         } else {
+            // Secondary path: if RHS is an arithmetic binary expression, evaluate its
+            // operands (materializing temps as needed), but emit the final assignment
+            // directly as a binary into the destination to avoid an extra temporary.
+            if let Expr::Binary { left, op, right, .. } = rhs {
+                if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div) {
+                    let l = self.eval_as_value(left);
+                    let r = self.eval_as_value(right);
+                    let op = map_arith(*op);
+                    self.emit(Instr::Assign { dst: name.to_string(), src: Rhs::Binary { op, left: l, right: r } });
+                    return;
+                }
+            }
+
             // Fallback to general evaluation which may materialize temps as needed
             let v = self.eval_as_value(rhs);
             self.emit(Instr::Assign { dst: name.to_string(), src: Rhs::Value(v) });
@@ -229,12 +244,17 @@ impl Gen {
             this.emit_block(then_blk)
         });
         if else_label.is_some() {
-            self.emit(Instr::Goto(endif.clone()));
+            // glue to jump over else
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+                this.emit(Instr::Goto(endif.clone()));
+            });
         }
 
         // else
         if let Some(lbl) = &else_label {
-            self.emit(Instr::Label(lbl.clone()));
+            self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+                this.emit(Instr::Label(lbl.clone()));
+            });
             if let Some(else_blk) = else_blk {
                 self.with_optional_parent(Some(ControlFlowComponent::ElseBranch), |this| {
                     this.emit_block(else_blk)
@@ -242,7 +262,9 @@ impl Gen {
             }
         }
 
-        self.emit(Instr::Label(endif));
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::Label(endif));
+        });
     }
 
     fn lower_while_tracked(&mut self, ast_id: AstNodeId, cond: &Expr, body: &[Stmt]) {
@@ -252,15 +274,19 @@ impl Gen {
     fn lower_while_impl(&mut self, ast_id: Option<AstNodeId>, cond: &Expr, body: &[Stmt]) {
         let start = self.new_label();
         let end = self.new_label();
-        self.emit(Instr::Label(start.clone()));
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::Label(start.clone()));
+        });
         self.with_optional_context(ast_id, Some(ControlFlowComponent::Condition), |this| {
             this.emit_simple_branch_on_false(cond, &end);
         });
         self.with_optional_parent(Some(ControlFlowComponent::LoopBody), |this| {
             this.emit_block(body);
         });
-        self.emit(Instr::Goto(start));
-        self.emit(Instr::Label(end));
+        self.with_optional_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::Goto(start));
+            this.emit(Instr::Label(end));
+        });
     }
 
     fn lower_for_tracked(&mut self, ast_id: AstNodeId, var: &str, from: &Expr, to: &Expr, body: &[Stmt]) {
@@ -268,21 +294,29 @@ impl Gen {
         let end = self.new_label();
 
         // init var = from
-        let from_v = self.eval_as_value(from);
-        self.emit(Instr::Assign { dst: var.to_string(), src: Rhs::Value(from_v) });
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            let from_v = this.eval_as_value(from);
+            this.emit(Instr::Assign { dst: var.to_string(), src: Rhs::Value(from_v) });
+        });
 
-        self.emit(Instr::Label(start.clone()));
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::Label(start.clone()));
+        });
         // if var > to goto end
-        let to_v = self.eval_as_value(to);
-        self.emit(Instr::IfCmpGoto { left: Value::Var(var.to_string()), op: RelOp::Gt, right: to_v, target: end.clone() });
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |this| {
+            let to_v = this.eval_as_value(to);
+            this.emit(Instr::IfCmpGoto { left: Value::Var(var.to_string()), op: RelOp::Gt, right: to_v, target: end.clone() });
+        });
 
         // body
         self.with_ast_context(ast_id, Some(ControlFlowComponent::LoopBody), |this| this.emit_block(body));
 
         // var = var + 1
-        self.emit(Instr::Assign { dst: var.to_string(), src: Rhs::Binary { op: ArithOp::Add, left: Value::Var(var.to_string()), right: Value::Imm(1) } });
-        self.emit(Instr::Goto(start));
-        self.emit(Instr::Label(end));
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::Assign { dst: var.to_string(), src: Rhs::Binary { op: ArithOp::Add, left: Value::Var(var.to_string()), right: Value::Imm(1) } });
+            this.emit(Instr::Goto(start));
+            this.emit(Instr::Label(end));
+        });
     }
 
     fn emit_block(&mut self, stmts: &[Stmt]) {
@@ -298,8 +332,9 @@ impl Gen {
         self.fn_ctx = Some(FunctionCtx { _name: name.to_string(), _param_index: map, had_return: false });
 
         // prologue
-        self.emit(Instr::FuncStart { name: name.to_string(), params: params.to_vec() });
-        self.with_ast_context(ast_id, None, |_| {});
+        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+            this.emit(Instr::FuncStart { name: name.to_string(), params: params.to_vec() });
+        });
 
         // body
         self.emit_block(body);
@@ -307,7 +342,9 @@ impl Gen {
         // epilogue if no return
         if let Some(ctx) = &self.fn_ctx {
             if !ctx.had_return {
-                self.emit(Instr::FuncEnd { name: name.to_string() });
+                self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| {
+                    this.emit(Instr::FuncEnd { name: name.to_string() });
+                });
             }
         }
         self.fn_ctx = None;
@@ -378,6 +415,7 @@ impl Gen {
     // }
 
     fn materialize_not(&mut self, operand: &Expr) -> Value {
+        // Attribute this emission to the 'not' expression itself (set by caller)
         let v = self.eval_as_value(operand);
         let tmp = self.new_temp();
         // tmp = 0 == v  (stand-in)
@@ -386,6 +424,7 @@ impl Gen {
     }
 
     fn materialize_relational(&mut self, left: &Expr, right: &Expr, op: AstBinOp) -> Value {
+        // Attribute to the relational expression (set by caller)
         let l = self.eval_as_value(left);
         let r = self.eval_as_value(right);
         let tmp = self.new_temp();
@@ -411,50 +450,54 @@ impl Gen {
     }
 
     fn eval_as_value(&mut self, e: &Expr) -> Value {
-        match e {
+        // Attribute all instructions produced while evaluating this expression to the expression's AST id
+        self.with_ast_context(e.id(), None, |this| {
+            match e {
             Expr::Number(_, n) => Value::Imm(*n),
             Expr::Variable(_, name) => Value::Var(name.clone()),
-            Expr::Unary { op: ast_ir::UnOp::Not, operand, .. } => self.materialize_not(operand),
+            Expr::Unary { op: ast_ir::UnOp::Not, operand, .. } => this.materialize_not(operand),
             Expr::Binary { left, op, right, .. } => {
                 match op {
                     AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div => {
-                        let (l, r, op) = self.lower_arith_expr(left, right, *op);
-                        let tmp = self.new_temp();
-                        self.emit(Instr::Assign { dst: tmp.clone(), src: Rhs::Binary { op, left: l, right: r } });
+                        let (l, r, op) = this.lower_arith_expr(left, right, *op);
+                        let tmp = this.new_temp();
+                        this.emit(Instr::Assign { dst: tmp.clone(), src: Rhs::Binary { op, left: l, right: r } });
                         Value::Var(tmp)
                     }
-                    AstBinOp::Eq | AstBinOp::Neq | AstBinOp::Lt | AstBinOp::Gt => self.materialize_relational(left, right, *op),
-                    AstBinOp::And => self.materialize_and(left, right),
-                    AstBinOp::Or => self.materialize_or(left, right),
+                    AstBinOp::Eq | AstBinOp::Neq | AstBinOp::Lt | AstBinOp::Gt => this.materialize_relational(left, right, *op),
+                    AstBinOp::And => this.materialize_and(left, right),
+                    AstBinOp::Or => this.materialize_or(left, right),
                 }
             }
             Expr::AddrOf(_, name) => Value::AddrOf(name.clone()),
             Expr::Deref(_, ptr) => {
-                let addr = self.eval_as_pointer_expr(ptr);
-                let tmp = self.new_temp();
-                self.emit(Instr::Load { dst: tmp.clone(), addr });
+                let addr = this.eval_as_pointer_expr(ptr);
+                let tmp = this.new_temp();
+                this.emit(Instr::Load { dst: tmp.clone(), addr });
                 Value::Var(tmp)
             }
             Expr::Index { base, index, .. } => {
                 let base_addr = Value::AddrOf(base.clone());
-                let idx_v = self.eval_as_value(index);
-                let tmp_addr = self.new_temp();
-                self.emit(Instr::Assign { dst: tmp_addr.clone(), src: Rhs::Binary { op: ArithOp::Add, left: base_addr, right: idx_v } });
-                let tmp = self.new_temp();
-                self.emit(Instr::Load { dst: tmp.clone(), addr: Value::Var(tmp_addr) });
+                let idx_v = this.eval_as_value(index);
+                let tmp_addr = this.new_temp();
+                this.emit(Instr::Assign { dst: tmp_addr.clone(), src: Rhs::Binary { op: ArithOp::Add, left: base_addr, right: idx_v } });
+                let tmp = this.new_temp();
+                this.emit(Instr::Load { dst: tmp.clone(), addr: Value::Var(tmp_addr) });
                 Value::Var(tmp)
             }
             Expr::Call { name, args, .. } => {
                 let mut vs = Vec::new();
-                for a in args { vs.push(self.eval_as_value(a)); }
-                let tmp = self.new_temp();
-                self.emit(Instr::Call { func: name.clone(), args: vs, ret: Some(tmp.clone()) });
+                for a in args { vs.push(this.eval_as_value(a)); }
+                let tmp = this.new_temp();
+                this.emit(Instr::Call { func: name.clone(), args: vs, ret: Some(tmp.clone()) });
                 Value::Var(tmp)
             }
-        }
+            }
+        })
     }
 
     fn eval_as_pointer_expr(&mut self, e: &Expr) -> Value {
+        // Attribute to the inner expression id as well
         match e {
             Expr::Variable(_, name) => Value::AddrOf(name.clone()),
             Expr::AddrOf(_, name) => Value::AddrOf(name.clone()),

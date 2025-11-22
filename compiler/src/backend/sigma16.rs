@@ -10,5 +10,11 @@
 mod regalloc;
 mod codegen;
 
-pub use codegen::{compile_ir_to_sigma16, compile_ir_to_sigma16_with_allocator};
+pub use codegen::{
+    compile_ir_to_sigma16,
+    compile_ir_to_sigma16_with_allocator,
+    compile_ir_to_sigma16_mapped,
+    compile_ir_to_sigma16_with_allocator_mapped,
+    Sigma16Asm,
+};
 pub use regalloc::AllocatorKind;
