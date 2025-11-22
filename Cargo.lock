@@ -216,42 +216,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "compiler"
-version = "0.1.0"
-dependencies = [
- "lalrpop",
- "lalrpop-util",
- "logos",
- "thiserror",
-]
-
-[[package]]
-name = "compiler-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "compiler",
- "crossterm",
- "logos",
- "ratatui",
- "tui-textarea",
-]
-
-[[package]]
-name = "compiler-wasm"
-version = "0.1.0"
-dependencies = [
- "compiler",
- "console_error_panic_hook",
- "serde",
- "serde-wasm-bindgen",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-test",
-]
-
-[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -849,6 +813,42 @@ name = "ryu"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
+name = "s16-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "logos",
+ "ratatui",
+ "s16-compiler",
+ "tui-textarea",
+]
+
+[[package]]
+name = "s16-compiler"
+version = "0.1.0"
+dependencies = [
+ "lalrpop",
+ "lalrpop-util",
+ "logos",
+ "thiserror",
+]
+
+[[package]]
+name = "s16-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "s16-compiler",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+]
 
 [[package]]
 name = "same-file"

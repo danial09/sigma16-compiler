@@ -1,22 +1,27 @@
-use std::io;
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Tabs, Clear, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, Wrap};
 use ratatui::Terminal;
 use tui_textarea::{Input, Key, TextArea};
 
-use compiler::ir::{AstNodeId, AstNodeKind, ProgramIR, ControlFlowComponent};
-use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind};
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind};
+use s16_compiler::ir::{AstNodeId, AstNodeKind, ControlFlowComponent, ProgramIR};
 
 pub fn run_tui(path: Option<PathBuf>, initial_text: String) -> Result<()> {
     // Setup terminal
@@ -31,17 +36,32 @@ pub fn run_tui(path: Option<PathBuf>, initial_text: String) -> Result<()> {
 
     // Restore terminal
     disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture).ok();
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
     terminal.show_cursor().ok();
 
     res
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum RightTab { Asm, Ir, Ast, Mappings, Errors }
+enum RightTab {
+    Asm,
+    Ir,
+    Ast,
+    Mappings,
+    Errors,
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Mode { Normal, OpenPrompt, Help }
+enum Mode {
+    Normal,
+    OpenPrompt,
+    Help,
+}
 
 struct App {
     file_path: Option<PathBuf>,
@@ -73,7 +93,9 @@ impl App {
             file_path: path,
             editor,
             right_tab: RightTab::Asm,
-            status: "Ready. F5/Ctrl+R: Compile | Ctrl+S: Save | Tab: Switch pane | Esc/Ctrl+Q: Quit".to_string(),
+            status:
+                "Ready. F5/Ctrl+R: Compile | Ctrl+S: Save | Tab: Switch pane | Esc/Ctrl+Q: Quit"
+                    .to_string(),
             last_error: None,
             ir: None,
             ir_lines: Vec::new(),
@@ -89,14 +111,14 @@ impl App {
 
     fn compile(&mut self) {
         let source = self.editor.lines().join("\n");
-        match compiler::compile_to_ir(&source) {
+        match s16_compiler::compile_to_ir(&source) {
             Ok(ir) => {
                 self.ir_lines = ir.to_lines();
                 self.ir_selected = 0.min(self.ir_lines.len().saturating_sub(1));
                 self.ast_spans = ir.source_map.list_ast_spans_by_line();
                 self.last_error = None;
-                // Build assembly from the IR using Advanced allocator by default
-                let asm = compile_ir_to_sigma16_with_allocator_mapped(AllocatorKind::Advanced, &ir);
+                // Build assembly from the IR using Basic allocator by default
+                let asm = compile_ir_to_sigma16_with_allocator_mapped(AllocatorKind::Basic, &ir);
                 self.asm_lines = asm.lines.clone();
                 self.asm_ir_mapping = asm.asm_ir_mapping.clone();
                 self.status = format!(
@@ -161,7 +183,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         if crossterm::event::poll(timeout)? {
             match event::read()? {
                 Event::Key(key) => {
-                    if handle_key(app, key)? { break; }
+                    if handle_key(app, key)? {
+                        break;
+                    }
                 }
                 Event::Resize(_, _) => {}
                 _ => {}
@@ -176,54 +200,88 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // Process only "press" events to avoid handling repeat/release twice.
-    if key.kind != KeyEventKind::Press { return Ok(false); }
+    if key.kind != KeyEventKind::Press {
+        return Ok(false);
+    }
     // Mode-specific handling first
     match app.mode {
         Mode::Help => {
-            if key.code == KeyCode::F(1) || key.code == KeyCode::Esc { app.mode = Mode::Normal; }
+            if key.code == KeyCode::F(1) || key.code == KeyCode::Esc {
+                app.mode = Mode::Normal;
+            }
             return Ok(false);
         }
-        Mode::OpenPrompt => {
-            match key.code {
-                KeyCode::Enter => {
-                    let path_str = app.open_input.trim();
-                    if path_str.is_empty() { app.status = "Open canceled".to_string(); app.mode = Mode::Normal; return Ok(false); }
-                    let p = PathBuf::from(path_str);
-                    match std::fs::read_to_string(&p) {
-                        Ok(content) => {
-                            app.file_path = Some(p);
-                            app.editor = make_editor(&content);
-                            app.status = "File opened".to_string();
-                            app.mode = Mode::Normal;
-                        }
-                        Err(e) => {
-                            app.last_error = Some(format!("Open failed: {}", e));
-                            app.status = "Open failed (see Errors tab)".to_string();
-                            app.mode = Mode::Normal;
-                        }
+        Mode::OpenPrompt => match key.code {
+            KeyCode::Enter => {
+                let path_str = app.open_input.trim();
+                if path_str.is_empty() {
+                    app.status = "Open canceled".to_string();
+                    app.mode = Mode::Normal;
+                    return Ok(false);
+                }
+                let p = PathBuf::from(path_str);
+                match std::fs::read_to_string(&p) {
+                    Ok(content) => {
+                        app.file_path = Some(p);
+                        app.editor = make_editor(&content);
+                        app.status = "File opened".to_string();
+                        app.mode = Mode::Normal;
                     }
-                    return Ok(false);
+                    Err(e) => {
+                        app.last_error = Some(format!("Open failed: {}", e));
+                        app.status = "Open failed (see Errors tab)".to_string();
+                        app.mode = Mode::Normal;
+                    }
                 }
-                KeyCode::Esc => { app.mode = Mode::Normal; app.status = "Open canceled".to_string(); return Ok(false); }
-                KeyCode::Backspace => { app.open_input.pop(); return Ok(false); }
-                KeyCode::Char(c) => {
-                    if !key.modifiers.contains(KeyModifiers::CONTROL) { app.open_input.push(c); }
-                    return Ok(false);
-                }
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Delete | KeyCode::F(_) => { return Ok(false); }
-                _ => { return Ok(false); }
+                return Ok(false);
             }
-        }
+            KeyCode::Esc => {
+                app.mode = Mode::Normal;
+                app.status = "Open canceled".to_string();
+                return Ok(false);
+            }
+            KeyCode::Backspace => {
+                app.open_input.pop();
+                return Ok(false);
+            }
+            KeyCode::Char(c) => {
+                if !key.modifiers.contains(KeyModifiers::CONTROL) {
+                    app.open_input.push(c);
+                }
+                return Ok(false);
+            }
+            KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Home
+            | KeyCode::End
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Delete
+            | KeyCode::F(_) => {
+                return Ok(false);
+            }
+            _ => {
+                return Ok(false);
+            }
+        },
         Mode::Normal => {}
     }
 
     // Global quit
-    if (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL)) || key.code == KeyCode::Esc {
+    if (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
+        || key.code == KeyCode::Esc
+    {
         return Ok(true);
     }
 
     // Compile
-    if key.code == KeyCode::F(5) || (key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL)) {
+    if key.code == KeyCode::F(5)
+        || (key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL))
+    {
         app.compile();
         return Ok(false);
     }
@@ -290,7 +348,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // Forward to editor by default
     // Map KeyEvent to tui-textarea Input
     let input = key_event_to_input(key);
-    if let Some(input) = input { app.editor.input(input); }
+    if let Some(input) = input {
+        app.editor.input(input);
+    }
     Ok(false)
 }
 
@@ -298,7 +358,12 @@ fn key_event_to_input(key: KeyEvent) -> Option<Input> {
     // Minimal mapping; tui-textarea also supports raw paste etc.
     // Special case: BackTab (Shift+Tab) -> represent as Tab with shift=true
     if matches!(key.code, KeyCode::BackTab) {
-        return Some(Input { key: Key::Tab, ctrl: key.modifiers.contains(KeyModifiers::CONTROL), alt: key.modifiers.contains(KeyModifiers::ALT), shift: true });
+        return Some(Input {
+            key: Key::Tab,
+            ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
+            alt: key.modifiers.contains(KeyModifiers::ALT),
+            shift: true,
+        });
     }
 
     let k = match key.code {
@@ -318,12 +383,24 @@ fn key_event_to_input(key: KeyEvent) -> Option<Input> {
         KeyCode::F(_) => return None,
         KeyCode::Char(c) => {
             // Ctrl shortcuts handled earlier
-            if key.modifiers.contains(KeyModifiers::CONTROL) { return None; }
-            return Some(Input { key: Key::Char(c), ctrl: false, alt: key.modifiers.contains(KeyModifiers::ALT), shift: key.modifiers.contains(KeyModifiers::SHIFT) });
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                return None;
+            }
+            return Some(Input {
+                key: Key::Char(c),
+                ctrl: false,
+                alt: key.modifiers.contains(KeyModifiers::ALT),
+                shift: key.modifiers.contains(KeyModifiers::SHIFT),
+            });
         }
         _ => return None,
     };
-    Some(Input { key: k, ctrl: key.modifiers.contains(KeyModifiers::CONTROL), alt: key.modifiers.contains(KeyModifiers::ALT), shift: key.modifiers.contains(KeyModifiers::SHIFT) })
+    Some(Input {
+        key: k,
+        ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
+        alt: key.modifiers.contains(KeyModifiers::ALT),
+        shift: key.modifiers.contains(KeyModifiers::SHIFT),
+    })
 }
 
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
@@ -332,10 +409,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     // Layout: vertical split: main (editor + right pane), status bar
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(size);
 
     draw_main_area(f, app, chunks[0]);
@@ -351,10 +425,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 fn draw_main_area(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(60),
-            Constraint::Percentage(40),
-        ])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
     // Editor on the left
@@ -363,13 +434,12 @@ fn draw_main_area(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     // Right side: tabs + content stacked vertically
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(3),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(3)])
         .split(cols[1]);
 
-    let titles = ["ASM", "IR", "AST", "Mappings", "Errors"].into_iter().map(|t| Line::from(Span::styled(t, Style::default().fg(Color::Cyan))));
+    let titles = ["ASM", "IR", "AST", "Mappings", "Errors"]
+        .into_iter()
+        .map(|t| Line::from(Span::styled(t, Style::default().fg(Color::Cyan))));
     let selected = match app.right_tab {
         RightTab::Asm => 0,
         RightTab::Ir => 1,
@@ -377,7 +447,10 @@ fn draw_main_area(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         RightTab::Mappings => 3,
         RightTab::Errors => 4,
     };
-    let tabs = Tabs::new(titles).select(selected).block(Block::default().borders(Borders::ALL).title("Analysis")).highlight_style(Style::default().fg(Color::Yellow));
+    let tabs = Tabs::new(titles)
+        .select(selected)
+        .block(Block::default().borders(Borders::ALL).title("Analysis"))
+        .highlight_style(Style::default().fg(Color::Yellow));
     f.render_widget(tabs, right_chunks[0]);
 
     match app.right_tab {
@@ -391,8 +464,18 @@ fn draw_main_area(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
 fn draw_status(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let (line0, col0) = app.cursor_pos_0();
-    let filename = app.file_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<unnamed>".to_string());
-    let msg = format!("{}  |  Ln {}, Col {}  |  {}", filename, line0 + 1, col0 + 1, app.status);
+    let filename = app
+        .file_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<unnamed>".to_string());
+    let msg = format!(
+        "{}  |  Ln {}, Col {}  |  {}",
+        filename,
+        line0 + 1,
+        col0 + 1,
+        app.status
+    );
     let bar = Paragraph::new(msg).block(Block::default().borders(Borders::ALL));
     f.render_widget(bar, area);
 }
@@ -411,14 +494,22 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
         // Helper: prefer meaningful AST kinds for hover selection
         fn preferred_kind(k: AstNodeKind) -> bool {
-            matches!(k, AstNodeKind::Binary | AstNodeKind::Unary | AstNodeKind::Assign | AstNodeKind::If | AstNodeKind::While | AstNodeKind::For)
+            matches!(
+                k,
+                AstNodeKind::Binary
+                    | AstNodeKind::Unary
+                    | AstNodeKind::Assign
+                    | AstNodeKind::If
+                    | AstNodeKind::While
+                    | AstNodeKind::For
+            )
         }
 
         // Choose best AST under cursor; if the direct node has no IR, climb to a containing node
         let best_ast = if let Some(base) = ir.source_map.get_ast_info_at(l, c) {
             // Start with what the compiler reports (already biased to nodes with IR when possible)
             let mut chosen = base.clone();
-            let mut has_ir = !ir.source_map.get_instrs_for_ast(chosen.id).is_empty();
+            let has_ir = !ir.source_map.get_instrs_for_ast(chosen.id).is_empty();
             if !has_ir {
                 // Consider ancestors: spans that fully contain the base span
                 let mut candidates: Vec<(usize, AstNodeId, AstNodeKind)> = Vec::new();
@@ -433,23 +524,31 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 let mut pick: Option<AstNodeId> = None;
                 // Pass 1: has IR + preferred kind
                 for &(_, id, kind) in &candidates {
-                    if preferred_kind(kind) && !ir.source_map.get_instrs_for_ast(id).is_empty() { pick = Some(id); break; }
+                    if preferred_kind(kind) && !ir.source_map.get_instrs_for_ast(id).is_empty() {
+                        pick = Some(id);
+                        break;
+                    }
                 }
                 // Pass 2: has IR (any kind)
                 if pick.is_none() {
                     for &(_, id, _) in &candidates {
-                        if !ir.source_map.get_instrs_for_ast(id).is_empty() { pick = Some(id); break; }
+                        if !ir.source_map.get_instrs_for_ast(id).is_empty() {
+                            pick = Some(id);
+                            break;
+                        }
                     }
                 }
                 if let Some(id) = pick {
                     if let Some(info) = ir.source_map.get_ast_info_by_id(id) {
                         chosen = info;
-                        has_ir = true;
+                        // has_ir = true;
                     }
                 }
             }
             Some(chosen)
-        } else { None };
+        } else {
+            None
+        };
 
         if let Some(ast_info) = best_ast {
             // Primary: statement/expression-specific IR
@@ -463,7 +562,9 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 for m in ir.source_map.get_mappings_for_instr(idx) {
                     if let Some(comp) = m.component {
                         match comp {
-                            ControlFlowComponent::ThenBranch | ControlFlowComponent::ElseBranch | ControlFlowComponent::LoopBody => {
+                            ControlFlowComponent::ThenBranch
+                            | ControlFlowComponent::ElseBranch
+                            | ControlFlowComponent::LoopBody => {
                                 *comp_counts.entry(comp).or_insert(0) += 1;
                             }
                             _ => {}
@@ -481,10 +582,15 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
             let mut control_span: Option<(usize, usize)> = None;
             for (_, s, e, kind) in &app.ast_spans {
                 if *s <= ast_info.span.start && ast_info.span.end <= *e {
-                    if matches!(kind, AstNodeKind::If | AstNodeKind::While | AstNodeKind::For) {
+                    if matches!(
+                        kind,
+                        AstNodeKind::If | AstNodeKind::While | AstNodeKind::For
+                    ) {
                         match control_span {
                             Some((cs, ce)) => {
-                                if (*e - *s) < (ce - cs) { control_span = Some((*s, *e)); }
+                                if (*e - *s) < (ce - cs) {
+                                    control_span = Some((*s, *e));
+                                }
                             }
                             None => control_span = Some((*s, *e)),
                         }
@@ -495,31 +601,45 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
             if let (Some(comp), Some((cs, ce))) = (block_component, control_span) {
                 // Secondary: all IR in the same block component within the control span
                 for idx in 0..ir.instrs.len() {
-                    if stmt_set.contains(&idx) { continue; }
+                    if stmt_set.contains(&idx) {
+                        continue;
+                    }
                     let maps = ir.source_map.get_mappings_for_instr(idx);
                     let in_block = maps.iter().any(|m| {
-                        if m.component != Some(comp) { return false; }
+                        if m.component != Some(comp) {
+                            return false;
+                        }
                         if let Some(info) = ir.source_map.get_ast_info_by_id(m.ast_node_id) {
                             info.span.start >= cs && info.span.end <= ce
                         } else {
                             false
                         }
                     });
-                    if in_block { block_set.insert(idx); }
+                    if in_block {
+                        block_set.insert(idx);
+                    }
                 }
             }
         } else {
             // Fallback: if no AST node, highlight by position mapping as before
-            for idx in ir.source_map.get_instrs_at(l, c) { stmt_set.insert(idx); }
+            for idx in ir.source_map.get_instrs_at(l, c) {
+                stmt_set.insert(idx);
+            }
         }
     }
 
     // Render with layered styles: selection -> block (blue) -> statement (bold green)
     for (i, line) in app.ir_lines.iter().enumerate() {
         let mut style = Style::default();
-        if i == app.ir_selected { style = style.fg(Color::Yellow); }
-        if block_set.contains(&i) { style = style.fg(Color::Blue); }
-        if stmt_set.contains(&i) { style = style.add_modifier(Modifier::BOLD).fg(Color::Green); }
+        if i == app.ir_selected {
+            style = style.fg(Color::Yellow);
+        }
+        if block_set.contains(&i) {
+            style = style.fg(Color::Blue);
+        }
+        if stmt_set.contains(&i) {
+            style = style.add_modifier(Modifier::BOLD).fg(Color::Green);
+        }
         let text = format!("{:3}: {}", i, line);
         items.push(ListItem::new(text).style(style));
     }
@@ -531,10 +651,18 @@ fn draw_ir(f: &mut ratatui::Frame, app: &App, area: Rect) {
 fn draw_ast(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let mut items: Vec<ListItem> = Vec::new();
     for (id, start, end, kind) in &app.ast_spans {
-        let text = format!("{:>3}  {:<8}  lines {}..{}", id.0, fmt_kind(*kind), start + 1, end + 1);
+        let text = format!(
+            "{:>3}  {:<8}  lines {}..{}",
+            id.0,
+            fmt_kind(*kind),
+            start + 1,
+            end + 1
+        );
         items.push(ListItem::new(text));
     }
-    if items.is_empty() { items.push(ListItem::new("<no AST spans – compile (F5)>")); }
+    if items.is_empty() {
+        items.push(ListItem::new("<no AST spans – compile (F5)>"));
+    }
     let list = List::new(items).block(Block::default().borders(Borders::ALL).title("AST Spans"));
     f.render_widget(list, area);
 }
@@ -564,7 +692,9 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
                 let mut asm_lines_for_ast: Vec<usize> = Vec::new();
                 for (i, m) in app.asm_ir_mapping.iter().enumerate() {
                     if let Some(mi) = m {
-                        if set.contains(mi) { asm_lines_for_ast.push(i); }
+                        if set.contains(mi) {
+                            asm_lines_for_ast.push(i);
+                        }
                     }
                 }
                 if !asm_lines_for_ast.is_empty() {
@@ -581,7 +711,11 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
         if app.ir_selected < ir.instrs.len() {
             let idx = app.ir_selected;
             let maps = ir.source_map.get_mappings_for_instr(idx);
-            lines.push(Line::from(format!("Selected IR [{}]: {} mapping(s)", idx, maps.len())));
+            lines.push(Line::from(format!(
+                "Selected IR [{}]: {} mapping(s)",
+                idx,
+                maps.len()
+            )));
             for m in maps {
                 lines.push(Line::from(format!(
                     "  -> AST id={} component={:?} desc={}",
@@ -592,10 +726,15 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
             if !app.asm_ir_mapping.is_empty() {
                 let mut asm_lines_for_ir: Vec<usize> = Vec::new();
                 for (i, m) in app.asm_ir_mapping.iter().enumerate() {
-                    if matches!(m, Some(mi) if *mi == idx) { asm_lines_for_ir.push(i); }
+                    if matches!(m, Some(mi) if *mi == idx) {
+                        asm_lines_for_ir.push(i);
+                    }
                 }
                 if !asm_lines_for_ir.is_empty() {
-                    lines.push(Line::from(format!("  -> ASM line idxs: {:?}", asm_lines_for_ir)));
+                    lines.push(Line::from(format!(
+                        "  -> ASM line idxs: {:?}",
+                        asm_lines_for_ir
+                    )));
                 }
             }
         }
@@ -607,7 +746,10 @@ fn draw_mappings(f: &mut ratatui::Frame, app: &App, area: Rect) {
 }
 
 fn draw_errors(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    let msg = app.last_error.clone().unwrap_or_else(|| "No errors.".to_string());
+    let msg = app
+        .last_error
+        .clone()
+        .unwrap_or_else(|| "No errors.".to_string());
     let p = Paragraph::new(msg).block(Block::default().borders(Borders::ALL).title("Errors"));
     f.render_widget(p, area);
 }
@@ -630,7 +772,10 @@ fn draw_asm(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
         for (i, line) in app.asm_lines.iter().enumerate() {
             let ir_map = app.asm_ir_mapping.get(i).cloned().unwrap_or(None);
-            let label = match ir_map { Some(ix) => format!("{:>4}", ix), None => "   -".to_string() };
+            let label = match ir_map {
+                Some(ix) => format!("{:>4}", ix),
+                None => "   -".to_string(),
+            };
             let composed = format!("{}  {}", label, line);
             let mut style = Style::default();
             if let Some(ix) = ir_map {
@@ -645,7 +790,11 @@ fn draw_asm(f: &mut ratatui::Frame, app: &App, area: Rect) {
             items.push(ListItem::new(composed).style(style));
         }
     }
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("Assembly  [col: IR index or '-']"));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Assembly  [col: IR index or '-']"),
+    );
     f.render_widget(list, area);
 }
 
@@ -715,7 +864,9 @@ fn draw_help(f: &mut ratatui::Frame, area: Rect) {
         Line::from("  Mappings  - Shows AST at cursor and IR mapping, and for selected IR line"),
         Line::from("  Errors    - Last error message"),
     ];
-    let p = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let p = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     f.render_widget(Clear, area);
     f.render_widget(p, area);
 }

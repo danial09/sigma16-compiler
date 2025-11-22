@@ -1,7 +1,7 @@
 
 use clap::{Parser, ValueEnum};
-use compiler::compile_to_ir;
-use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
+use s16_compiler::compile_to_ir;
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
 use std::fs;
 use std::path::PathBuf;
 
@@ -36,7 +36,7 @@ struct Args {
 
     /// Register allocation strategy for assembly generation
     /// Options: basic, advanced (default: advanced)
-    #[arg(long, value_enum, default_value_t = AllocOpt::Advanced)]
+    #[arg(long, value_enum, default_value_t = AllocOpt::Basic)]
     alloc: AllocOpt,
 }
 
@@ -95,8 +95,8 @@ fn main() {
     }
 }
 
-fn test_source_map(ir: &compiler::ir::ProgramIR) {
-    use compiler::ir::{AstNodeId, ControlFlowComponent};
+fn test_source_map(ir: &s16_compiler::ir::ProgramIR) {
+    use s16_compiler::ir::{AstNodeId, ControlFlowComponent};
 
     println!("========== Source Map Tests ==========\n");
 

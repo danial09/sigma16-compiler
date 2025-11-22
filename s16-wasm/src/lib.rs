@@ -1,6 +1,6 @@
-use wasm_bindgen::prelude::*;
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
 use serde::{Deserialize, Serialize};
-use compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
+use wasm_bindgen::prelude::*;
 
 // ======================================================================================
 // New WASM API (v2): snapshot-based, easy to consume, thoroughly documented.
@@ -37,9 +37,16 @@ pub fn init() {
 /// Register allocator option for assembly generation.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 #[serde(rename_all = "lowercase")]
-pub enum AllocatorOpt { Basic, Advanced }
+pub enum AllocatorOpt {
+    Basic,
+    Advanced,
+}
 
-impl Default for AllocatorOpt { fn default() -> Self { AllocatorOpt::Advanced } }
+impl Default for AllocatorOpt {
+    fn default() -> Self {
+        AllocatorOpt::Advanced
+    }
+}
 
 /// Control-flow component for fine-grained mapping.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +62,16 @@ pub enum WasmControlFlowComponent {
 /// AST node kind.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub enum WasmAstNodeKind { Assign, If, While, For, Number, Variable, Binary, Unary }
+pub enum WasmAstNodeKind {
+    Assign,
+    If,
+    While,
+    For,
+    Number,
+    Variable,
+    Binary,
+    Unary,
+}
 
 /// Span of an AST node in multiple coordinate systems.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -104,24 +120,34 @@ pub struct WasmComponentGroup {
 
 /// Declared fixed-size arrays in the program.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct WasmArrayDecl { pub name: String, pub size: usize }
+pub struct WasmArrayDecl {
+    pub name: String,
+    pub size: usize,
+}
 
 /// Options for `compile_snapshot`. All fields are optional (sensible defaults).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CompileOptions {
     /// Include textual IR lines in the snapshot (default: true).
-    #[serde(default = "default_true")] pub emit_ir: bool,
+    #[serde(default = "default_true")]
+    pub emit_ir: bool,
     /// Include Sigma16 assembly in the snapshot (default: false).
-    #[serde(default)] pub emit_asm: bool,
+    #[serde(default)]
+    pub emit_asm: bool,
     /// Register allocator for assembly (default: "advanced").
-    #[serde(default)] pub allocator: AllocatorOpt,
+    #[serde(default)]
+    pub allocator: AllocatorOpt,
     /// Include per-instruction mappings (default: true).
-    #[serde(default = "default_true")] pub include_mappings: bool,
+    #[serde(default = "default_true")]
+    pub include_mappings: bool,
     /// Include grouping by AST and component (default: true).
-    #[serde(default = "default_true")] pub include_groups: bool,
+    #[serde(default = "default_true")]
+    pub include_groups: bool,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for CompileOptions {
     fn default() -> Self {
@@ -165,7 +191,7 @@ pub struct ProgramSnapshot {
 ///
 /// Usage example (TypeScript):
 /// ```ts
-/// import init, { compile_snapshot } from 'compiler-wasm';
+/// import init, { compile_snapshot } from 's16-wasm';
 /// await init();
 /// const snap = compile_snapshot(source, { emit_ir: true, emit_asm: false });
 /// // snap.ir?.forEach((line, idx) => console.log(idx, line));
@@ -189,21 +215,37 @@ pub fn compile_snapshot_default(source: &str) -> JsValue {
 }
 
 fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnapshot {
-    match compiler::compile_to_ir(source) {
+    match s16_compiler::compile_to_ir(source) {
         Ok(ir) => {
             // Build line starts once for 0-based (line,col) conversion
             let line_starts = compute_line_starts(source);
 
             // IR + ASM choices
-            let ir_lines = if opts.emit_ir { Some(ir.to_lines()) } else { None };
+            let ir_lines = if opts.emit_ir {
+                Some(ir.to_lines())
+            } else {
+                None
+            };
             let asm_lines = if opts.emit_asm {
-                let kind = match opts.allocator { AllocatorOpt::Basic => AllocatorKind::Basic, AllocatorOpt::Advanced => AllocatorKind::Advanced };
+                let kind = match opts.allocator {
+                    AllocatorOpt::Basic => AllocatorKind::Basic,
+                    AllocatorOpt::Advanced => AllocatorKind::Advanced,
+                };
                 let asm = compile_ir_to_sigma16_with_allocator(kind, &ir);
                 Some(asm.lines().map(|s| s.to_string()).collect())
-            } else { None };
+            } else {
+                None
+            };
 
             // Arrays
-            let arrays: Vec<WasmArrayDecl> = ir.arrays.iter().map(|(n, sz)| WasmArrayDecl { name: n.clone(), size: *sz }).collect();
+            let arrays: Vec<WasmArrayDecl> = ir
+                .arrays
+                .iter()
+                .map(|(n, sz)| WasmArrayDecl {
+                    name: n.clone(),
+                    size: *sz,
+                })
+                .collect();
 
             // AST spans
             let mut ast_spans: Vec<WasmAstSpan> = Vec::new();
@@ -245,13 +287,25 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
                 // by AST id: iterate ids we know from spans (stable set)
                 for (id, _, _, _) in ir.source_map.list_ast_spans_by_line() {
                     let instr_indices = ir.source_map.get_instrs_for_ast(id);
-                    by_ast.push(WasmAstGroup { ast_node_id: id.0, instr_indices });
+                    by_ast.push(WasmAstGroup {
+                        ast_node_id: id.0,
+                        instr_indices,
+                    });
                 }
                 // by component
-                use compiler::ir::ControlFlowComponent as C;
-                for comp in [C::Condition, C::ThenBranch, C::ElseBranch, C::LoopBody, C::ControlFlowGlue] {
+                use s16_compiler::ir::ControlFlowComponent as C;
+                for comp in [
+                    C::Condition,
+                    C::ThenBranch,
+                    C::ElseBranch,
+                    C::LoopBody,
+                    C::ControlFlowGlue,
+                ] {
                     let instr_indices = ir.source_map.get_instrs_for_component(comp);
-                    by_component.push(WasmComponentGroup { component: map_component(comp), instr_indices });
+                    by_component.push(WasmComponentGroup {
+                        component: map_component(comp),
+                        instr_indices,
+                    });
                 }
             }
 
@@ -297,7 +351,9 @@ pub struct CompilationResult {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct LegacySourceMapData { pub mappings: Vec<LegacyInstructionMapping> }
+pub struct LegacySourceMapData {
+    pub mappings: Vec<LegacyInstructionMapping>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct LegacyInstructionMapping {
@@ -332,24 +388,40 @@ pub fn compile_with_options(source: &str, emit_ir: bool, emit_asm: bool) -> JsVa
 }
 
 fn compile_legacy_internal(source: &str, emit_ir: bool, emit_asm: bool) -> CompilationResult {
-    match compiler::compile_to_ir(source) {
+    match s16_compiler::compile_to_ir(source) {
         Ok(ir) => {
             let source_map_data = legacy_extract_source_map(&ir);
             let ast_spans = legacy_extract_ast_spans_from_ir(&ir);
             let ir_lines = if emit_ir { Some(ir.to_lines()) } else { None };
             let asm_lines = if emit_asm {
                 // Legacy path used the simple allocator; preserve behavior
-                let asm = compiler::backend::sigma16::compile_ir_to_sigma16(&ir);
+                let asm = s16_compiler::backend::sigma16::compile_ir_to_sigma16(&ir);
                 Some(asm.lines().map(|s| s.to_string()).collect())
-            } else { None };
+            } else {
+                None
+            };
 
-            CompilationResult { success: true, ir: ir_lines, asm: asm_lines, error: None, source_map: Some(source_map_data), ast_spans: Some(ast_spans) }
+            CompilationResult {
+                success: true,
+                ir: ir_lines,
+                asm: asm_lines,
+                error: None,
+                source_map: Some(source_map_data),
+                ast_spans: Some(ast_spans),
+            }
         }
-        Err(e) => CompilationResult { success: false, ir: None, asm: None, error: Some(e.to_string()), source_map: None, ast_spans: None },
+        Err(e) => CompilationResult {
+            success: false,
+            ir: None,
+            asm: None,
+            error: Some(e.to_string()),
+            source_map: None,
+            ast_spans: None,
+        },
     }
 }
 
-fn legacy_extract_source_map(ir: &compiler::ir::ProgramIR) -> LegacySourceMapData {
+fn legacy_extract_source_map(ir: &s16_compiler::ir::ProgramIR) -> LegacySourceMapData {
     let mut mappings = Vec::new();
     for (idx, _) in ir.instrs.iter().enumerate() {
         let ast_mappings = ir.source_map.get_mappings_for_instr(idx);
@@ -365,8 +437,8 @@ fn legacy_extract_source_map(ir: &compiler::ir::ProgramIR) -> LegacySourceMapDat
     LegacySourceMapData { mappings }
 }
 
-fn legacy_extract_ast_spans_from_ir(ir: &compiler::ir::ProgramIR) -> Vec<LegacyAstSpan> {
-    use compiler::ir::AstNodeKind;
+fn legacy_extract_ast_spans_from_ir(ir: &s16_compiler::ir::ProgramIR) -> Vec<LegacyAstSpan> {
+    use s16_compiler::ir::AstNodeKind;
     let mut out = Vec::new();
     for (id, start_byte, end_byte, kind) in ir.source_map.list_ast_spans_by_line() {
         let node_type = match kind {
@@ -379,7 +451,12 @@ fn legacy_extract_ast_spans_from_ir(ir: &compiler::ir::ProgramIR) -> Vec<LegacyA
             AstNodeKind::Binary => "Binary",
             AstNodeKind::Unary => "Unary",
         };
-        out.push(LegacyAstSpan { ast_node_id: id.0, start_line: start_byte, end_line: end_byte, node_type: node_type.to_string() });
+        out.push(LegacyAstSpan {
+            ast_node_id: id.0,
+            start_line: start_byte,
+            end_line: end_byte,
+            node_type: node_type.to_string(),
+        });
     }
     out
 }
@@ -397,7 +474,11 @@ pub fn version() -> String {
 fn compute_line_starts(source: &str) -> Vec<usize> {
     let mut v = Vec::with_capacity(source.len() / 16 + 4);
     v.push(0);
-    for (i, ch) in source.char_indices() { if ch == '\n' { v.push(i + 1); } }
+    for (i, ch) in source.char_indices() {
+        if ch == '\n' {
+            v.push(i + 1);
+        }
+    }
     v
 }
 
@@ -412,8 +493,8 @@ fn byte_to_line_col(starts: &[usize], byte: usize) -> (usize, usize) {
     }
 }
 
-fn map_component(c: compiler::ir::ControlFlowComponent) -> WasmControlFlowComponent {
-    use compiler::ir::ControlFlowComponent as C;
+fn map_component(c: s16_compiler::ir::ControlFlowComponent) -> WasmControlFlowComponent {
+    use s16_compiler::ir::ControlFlowComponent as C;
     match c {
         C::Condition => WasmControlFlowComponent::Condition,
         C::ThenBranch => WasmControlFlowComponent::ThenBranch,
@@ -423,8 +504,8 @@ fn map_component(c: compiler::ir::ControlFlowComponent) -> WasmControlFlowCompon
     }
 }
 
-fn map_kind(k: compiler::ir::AstNodeKind) -> WasmAstNodeKind {
-    use compiler::ir::AstNodeKind as K;
+fn map_kind(k: s16_compiler::ir::AstNodeKind) -> WasmAstNodeKind {
+    use s16_compiler::ir::AstNodeKind as K;
     match k {
         K::Assign => WasmAstNodeKind::Assign,
         K::If => WasmAstNodeKind::If,

@@ -89,6 +89,23 @@ struct Codegen<R: RegAllocator> {
 }
 
 impl<R: RegAllocator> Codegen<R> {
+    // Ensure the top-level allocation region is started BEFORE any allocator calls.
+    // Without this, flushing allocator-emitted lines for the first operand of a
+    // top-level instruction would trigger begin_region() mid-instruction via emit(),
+    // resetting allocator state and potentially causing both operands to land in the
+    // same register (e.g., cmp R1,R1). Starting the region here keeps allocator state
+    // stable across the whole instruction.
+    fn ensure_top_level_region_started(&mut self) {
+        if self.func_buf.is_none() && !self.emitted_prog_start {
+            // Insert program start label before any top-level code
+            self.out.push("__prog_start".to_string());
+            self.out_map.push(None);
+            self.emitted_prog_start = true;
+            // Begin a new allocation region for top-level code
+            self.reg.begin_region();
+        }
+    }
+
     fn new(reg: R) -> Self {
         Self {
             out: Vec::new(),
@@ -357,6 +374,9 @@ impl<R: RegAllocator> Codegen<R> {
     }
 
     fn ensure_in_reg(&mut self, v: &Value) -> (&'static str, bool) {
+        // For top-level code (outside any function), ensure we start the region
+        // before consulting the allocator so its state doesn't reset mid-instruction.
+        self.ensure_top_level_region_started();
         if let Value::Var(name) = v {
             if !is_temp(name) { self.note_user_var(name); }
         }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["compiler", "compiler-cli", "compiler-wasm"]
+members = ["s16-compiler", "s16-cli", "s16-wasm"]
 resolver = "2"
 
 [workspace.package]
