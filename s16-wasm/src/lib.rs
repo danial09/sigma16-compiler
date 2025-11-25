@@ -1,4 +1,6 @@
-use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
+use s16_compiler::backend::sigma16::{
+    compile_ir_to_sigma16_with_allocator, compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind,
+};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -173,6 +175,9 @@ pub struct ProgramSnapshot {
     pub ir: Option<Vec<String>>,
     /// Sigma16 assembly, if requested.
     pub asm: Option<Vec<String>>,
+    /// Mapping from each ASM line to the originating IR instruction index (if any).
+    /// The i-th element corresponds to `asm[i]` when present.
+    pub asm_ir_mapping: Option<Vec<Option<usize>>>,
 
     /// Declared arrays.
     pub arrays: Vec<WasmArrayDecl>,
@@ -226,15 +231,19 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
             } else {
                 None
             };
-            let asm_lines = if opts.emit_asm {
+            let (asm_lines, asm_ir_mapping) = if opts.emit_asm {
                 let kind = match opts.allocator {
                     AllocatorOpt::Basic => AllocatorKind::Basic,
                     AllocatorOpt::Advanced => AllocatorKind::Advanced,
                 };
-                let asm = compile_ir_to_sigma16_with_allocator(kind, &ir);
-                Some(asm.lines().map(|s| s.to_string()).collect())
+                // Use mapped compilation to export per-line mapping to IR
+                let asm = compile_ir_to_sigma16_with_allocator_mapped(kind, &ir);
+                (
+                    Some(asm.lines.clone()),
+                    Some(asm.asm_ir_mapping.clone()),
+                )
             } else {
-                None
+                (None, None)
             };
 
             // Arrays
@@ -314,6 +323,7 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
                 error: None,
                 ir: ir_lines,
                 asm: asm_lines,
+                asm_ir_mapping,
                 arrays,
                 ast_spans,
                 instr_mappings,
@@ -326,6 +336,7 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
             error: Some(e.to_string()),
             ir: None,
             asm: None,
+            asm_ir_mapping: None,
             arrays: Vec::new(),
             ast_spans: Vec::new(),
             instr_mappings: Vec::new(),
