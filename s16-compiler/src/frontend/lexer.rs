@@ -2,26 +2,38 @@ use logos::Logos;
 use std::fmt;
 
 #[derive(Logos, Debug, PartialEq, Eq, Hash, Clone)]
-#[logos(skip r"[ \t\r\n]+")]  // Whitespace
-#[logos(skip r"#[^\n]*")]     // Shell-style comments starting with '#'
-#[logos(skip r"//[^\n]*")]    // C++-style line comments starting with '//'
+#[logos(skip r"[ \t\r\n]+")] // Whitespace
+#[logos(skip r"#[^\n]*")] // Shell-style comments starting with '#'
+#[logos(skip r"//[^\n]*")] // C++-style line comments starting with '//'
 pub enum Token {
     // --- Keywords ---
-    #[token("if")] If,
-    #[token("else")] Else,
-    #[token("while")] While,
-    #[token("for")] For,
-    #[token("from")] From,
-    #[token("to")] To,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
+    #[token("while")]
+    While,
+    #[token("for")]
+    For,
+    #[token("from")]
+    From,
+    #[token("to")]
+    To,
 
     // functions, returns, arrays
-    #[token("fn")] Fn,
-    #[token("return")] Return,
-    #[token("array")] Array,
+    #[token("fn")]
+    Fn,
+    #[token("return")]
+    Return,
+    #[token("array")]
+    Array,
 
-    #[token("and")] And,
-    #[token("or")] Or,
-    #[token("not")] Not,
+    #[token("and")]
+    And,
+    #[token("or")]
+    Or,
+    #[token("not")]
+    Not,
 
     // --- Identifiers and Numbers ---
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().to_string())]
@@ -31,28 +43,46 @@ pub enum Token {
     Number(i64),
 
     // --- Operators ---
-    #[token("==")] Eq,
-    #[token("!=")] Neq,
+    #[token("==")]
+    Eq,
+    #[token("!=")]
+    Neq,
 
-    #[token("=")] Assign,
-    #[token("+")] Plus,
-    #[token("-")] Minus,
-    #[token("*")] Mul,
-    #[token("/")] Div,
+    #[token("=")]
+    Assign,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Mul,
+    #[token("/")]
+    Div,
 
-    #[token(">")] Gt,
-    #[token("<")] Lt,
+    #[token(">")]
+    Gt,
+    #[token("<")]
+    Lt,
 
     // --- Punctuation
-    #[token("{")] LBrace,
-    #[token("}")] RBrace,
-    #[token("[")] LBracket,
-    #[token("]")] RBracket,
-    #[token("(")] LParen,
-    #[token(")")] RParen,
-    #[token(",")] Comma,
-    #[token("&")] Amp,
-    #[token(";")] Semicolon,
+    #[token("{")]
+    LBrace,
+    #[token("}")]
+    RBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
+    #[token("(")]
+    LParen,
+    #[token(")")]
+    RParen,
+    #[token(",")]
+    Comma,
+    #[token("&")]
+    Amp,
+    #[token(";")]
+    Semicolon,
 }
 
 /// Custom error type for lexical errors
@@ -70,11 +100,7 @@ impl fmt::Display for LexicalError {
         write!(
             f,
             "Unexpected character '{}' at line {}, column {} (position {})\n  Context: {}",
-            self.unexpected_char,
-            self.line,
-            self.column,
-            self.location,
-            self.context
+            self.unexpected_char, self.line, self.column, self.location, self.context
         )
     }
 }
@@ -85,7 +111,7 @@ impl std::error::Error for LexicalError {}
 fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
-    
+
     for (i, ch) in source.char_indices() {
         if i >= position {
             break;
@@ -97,7 +123,7 @@ fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
             col += 1;
         }
     }
-    
+
     (line, col)
 }
 
@@ -107,12 +133,12 @@ fn get_error_context(source: &str, position: usize) -> String {
         .rfind('\n')
         .map(|pos| pos + 1)
         .unwrap_or(0);
-    
+
     let line_end = source[position..]
         .find('\n')
         .map(|pos| position + pos)
         .unwrap_or(source.len());
-    
+
     source[line_start..line_end].trim().to_string()
 }
 
@@ -121,7 +147,7 @@ fn create_lexical_error(source: &str, position: usize) -> LexicalError {
     let (line, column) = position_to_line_col(source, position);
     let unexpected_char = source.chars().nth(position).unwrap_or('\0');
     let context = get_error_context(source, position);
-    
+
     LexicalError {
         location: position,
         line,
@@ -154,7 +180,7 @@ impl<'source> Iterator for LexerAdapter<'source> {
     fn next(&mut self) -> Option<Self::Item> {
         let token_result = self.lexer.next()?;
         let span = self.lexer.span();
-        
+
         Some(match token_result {
             Ok(token) => Ok((span.start, token, span.end)),
             Err(_) => Err(create_lexical_error(self.source, span.start)),
