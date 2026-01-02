@@ -40,6 +40,8 @@ extern {
         "Neq"     => Token::Neq,    // '!='
         "Lt"      => Token::Lt,     // '<'
         "Gt"      => Token::Gt,     // '>'
+        "Ge"      => Token::Ge,     // '>='
+        "Le"      => Token::Le,     // '<='
 
         "LBrace"  => Token::LBrace,
         "RBrace"  => Token::RBrace,
@@ -78,11 +80,26 @@ AssignStmt: Stmt =
         Stmt::Assign { id, target, value }
     };
 
-ArrayDeclStmt: Stmt =
+ArrayDeclStmt: Stmt = {
     <l:@L> "Array" <name:"Ident"> "LBracket" <n:"Number"> "RBracket" "Semicolon" <r:@R> => {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
-        Stmt::ArrayDecl { id, name: name.into(), size: n as usize }
+        Stmt::ArrayDecl { id, name: name.into(), size: n as usize, initial_values: None }
+    },
+
+    <l:@L> "Array" <name:"Ident"> "LBracket" <n:"Number"> "RBracket" "Assign" "LBracket" <vals:NumberList> "RBracket" "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::ArrayDecl { id, name: name.into(), size: n as usize, initial_values: Some(vals) }
+    },
+};
+
+NumberList: Vec<i64> =
+    <first:"Number"> <rest:("Comma" <"Number">)*> => {
+        let mut v = Vec::new();
+        v.push(first);
+        for id in rest { v.push(id); }
+        v
     };
 
 FunctionDef: Stmt =
@@ -183,6 +200,8 @@ CmpOp: BinOp = {
     "Neq" => BinOp::Neq,
     "Lt"  => BinOp::Lt,
     "Gt"  => BinOp::Gt,
+    "Le"  => BinOp::Le,
+    "Ge"  => BinOp::Ge,
 };
 
 // Addition and subtraction (left-associative)

@@ -9,6 +9,7 @@
       <sourceFolder url="file://$MODULE_DIR$/s16-cli/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/s16-compiler/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/s16-wasm/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/s16-compiler/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

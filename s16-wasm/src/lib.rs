@@ -1,5 +1,5 @@
 use s16_compiler::backend::sigma16::{
-    compile_ir_to_sigma16_with_allocator, compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind,
+    compile_ir_to_sigma16_mapped,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -125,6 +125,7 @@ pub struct WasmComponentGroup {
 pub struct WasmArrayDecl {
     pub name: String,
     pub size: usize,
+    pub initial_values: Option<Vec<i64>>,
 }
 
 /// Options for `compile_snapshot`. All fields are optional (sensible defaults).
@@ -232,12 +233,13 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
                 None
             };
             let (asm_lines, asm_ir_mapping) = if opts.emit_asm {
-                let kind = match opts.allocator {
-                    AllocatorOpt::Basic => AllocatorKind::Basic,
-                    AllocatorOpt::Advanced => AllocatorKind::Advanced,
-                };
+                // let kind = match opts.allocator {
+                //     AllocatorOpt::Basic => AllocatorKind::Basic,
+                //     AllocatorOpt::Advanced => AllocatorKind::Advanced,
+                // };
                 // Use mapped compilation to export per-line mapping to IR
-                let asm = compile_ir_to_sigma16_with_allocator_mapped(kind, &ir);
+                // let asm = compile_ir_to_sigma16_with_allocator_mapped(kind, &ir);
+                let asm = compile_ir_to_sigma16_mapped(&ir);
                 (
                     Some(asm.lines.clone()),
                     Some(asm.asm_ir_mapping.clone()),
@@ -250,9 +252,10 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
             let arrays: Vec<WasmArrayDecl> = ir
                 .arrays
                 .iter()
-                .map(|(n, sz)| WasmArrayDecl {
+                .map(|(n, sz, init)| WasmArrayDecl {
                     name: n.clone(),
                     size: *sz,
+                    initial_values: init.clone(),
                 })
                 .collect();
 

@@ -7,8 +7,10 @@
 //! - regalloc.rs: register allocation interfaces and basic implementations
 //! - codegen.rs: lowering from IR to Sigma16 assembly (uses a RegAllocator)
 
+mod abi;
 mod regalloc;
 mod codegen;
+mod opt;
 
 pub use codegen::{
     compile_ir_to_sigma16,
@@ -18,3 +20,4 @@ pub use codegen::{
     Sigma16Asm,
 };
 pub use regalloc::AllocatorKind;
+pub use abi::Register;
