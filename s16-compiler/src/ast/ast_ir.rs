@@ -38,6 +38,7 @@ pub enum Stmt {
         id: AstNodeId,
         name: String,
         size: usize,
+        initial_values: Option<Vec<i64>>,
     },
     /// Function definition with untyped parameters
     Function {
@@ -123,6 +124,8 @@ pub enum BinOp {
     Neq,
     Lt,
     Gt,
+    Le,
+    Ge,
     And,
     Or,
 }

@@ -23,6 +23,10 @@ pub enum CompileError {
 pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
     let parsed = ast::ast_ir::parse_to_ast(source)?;
     let mut ir = ir::ir_generator::lower(&parsed.program);
+
+    // Run optimization passes
+    ir::opt::optimize(&mut ir);
+
     // Initialize source index and register AST spans
     ir.source_map.init_source_index(source);
     for s in parsed.spans {

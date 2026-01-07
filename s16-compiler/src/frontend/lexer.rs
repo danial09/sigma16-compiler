@@ -63,6 +63,10 @@ pub enum Token {
     Gt,
     #[token("<")]
     Lt,
+    #[token(">=")]
+    Ge,
+    #[token("<=")]
+    Le,
 
     // --- Punctuation
     #[token("{")]

@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use s16_compiler::backend::sigma16::{AllocatorKind, compile_ir_to_sigma16_with_allocator};
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16};
 use s16_compiler::compile_to_ir;
 use std::fs;
 use std::path::PathBuf;
@@ -97,11 +97,11 @@ fn main() {
 
     // Conditionally build and print assembly
     if want_asm {
-        let kind = match args.alloc {
-            AllocOpt::Basic => AllocatorKind::Basic,
-            AllocOpt::Advanced => AllocatorKind::Advanced,
-        };
-        let asm = compile_ir_to_sigma16_with_allocator(kind, &ir);
+        // let kind = match args.alloc {
+        //     AllocOpt::Basic => AllocatorKind::Basic,
+        //     AllocOpt::Advanced => AllocatorKind::Advanced,
+        // };
+        let asm = compile_ir_to_sigma16(&ir);
         println!("{}", asm);
     }
 }

@@ -1,8 +1,11 @@
-// compiler/src/ir/mod.rs
+//! Intermediate Representation (IR) module.
+//!
+//! This module contains the IR definitions, the AST-to-IR generator,
+//! source mapping logic, and IR optimization passes.
 
-// Keep types reachable as `crate::ir::*`
 pub mod ir;
 pub use ir::*;
-
-// The IR generator lives in this module as well
+pub mod source_map;
+pub use source_map::*;
 pub mod ir_generator;
+pub mod opt;

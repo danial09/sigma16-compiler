@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, W
 use ratatui::Terminal;
 use tui_textarea::{Input, Key, TextArea};
 
-use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator_mapped, AllocatorKind};
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_mapped};
 use s16_compiler::ir::{AstNodeId, AstNodeKind, ControlFlowComponent, ProgramIR};
 
 pub fn run_tui(path: Option<PathBuf>, initial_text: String) -> Result<()> {
@@ -118,7 +118,7 @@ impl App {
                 self.ast_spans = ir.source_map.list_ast_spans_by_line();
                 self.last_error = None;
                 // Build assembly from the IR using Basic allocator by default
-                let asm = compile_ir_to_sigma16_with_allocator_mapped(AllocatorKind::Basic, &ir);
+                let asm = compile_ir_to_sigma16_mapped(&ir);
                 self.asm_lines = asm.lines.clone();
                 self.asm_ir_mapping = asm.asm_ir_mapping.clone();
                 self.status = format!(

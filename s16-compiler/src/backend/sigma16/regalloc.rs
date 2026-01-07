@@ -1,245 +1,256 @@
-use crate::ir::Value;
+use crate::ir::{Var, Value};
 use std::collections::{HashMap, HashSet};
+use super::abi::Register;
 
-/// Abstraction over register allocation and operand materialization.
-///
-/// Implementations can emit instructions into `out` to materialize a `Value`
-/// into a register and return the chosen register along with a boolean flag
-/// indicating whether the caller should free that register after use.
 pub trait RegAllocator {
-    fn ensure_in_reg<F: FnMut(&str)>(
+    fn bind_var_to_reg(&mut self, var: Var, reg: Register);
+    fn mark_dirty(&mut self, var: &Var);
+    fn clear_temp_busy(&mut self);
+    fn spill_reg(&mut self, reg: Register, out: &mut Vec<String>);
+    fn allocate_reg(&mut self, out: &mut Vec<String>) -> Register;
+    fn ensure_in_reg(
         &mut self,
         v: &Value,
         out: &mut Vec<String>,
-        note_user_var: F,
-    ) -> (&'static str, bool);
-
-    fn free_reg(&mut self, r: &'static str);
-
-    // Region management (top-level block or a function body). Default no-ops.
-    fn begin_region(&mut self) {}
-    fn end_region(&mut self) -> usize { 0 }
+        note_user: &mut dyn FnMut(&str),
+    ) -> (Register, bool);
+    fn free_reg(&mut self, r: Register);
+    fn spill_caller_saved(&mut self, out: &mut Vec<String>);
+    fn flush_all(&mut self, out: &mut Vec<String>);
+    fn flush_globals(&mut self, out: &mut Vec<String>);
+    fn begin_region(&mut self);
+    fn get_max_slots(&self) -> usize;
 }
 
-/// Which allocator to use. `Basic` mirrors the previous behavior; `Advanced`
-/// is a placeholder for a future sophisticated allocator with spilling.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocatorKind {
     Basic,
     Advanced,
 }
 
-/// A very simple linear-scan style allocator backed by a free-list.
-/// This mirrors the old behavior and serves as a baseline implementation.
-pub struct BasicRegAllocator {
-    /// Free register pool (strings like "R1")
-    free: Vec<&'static str>,
-    /// Mapping of temporary names ("__t*") to a held register
-    temp_regs: HashMap<String, &'static str>,
-    /// Reverse map: register -> temporary name (only for temps currently bound)
-    reg_to_temp: HashMap<&'static str, String>,
-    /// Mapping of user variables to a resident register (to avoid reloads)
-    user_regs: HashMap<String, &'static str>,
-    /// Reverse map: register -> user variable (only for user vars currently bound)
-    reg_to_user: HashMap<&'static str, String>,
-    /// Reserved scratch registers used only as last-resort materialization
-    /// when the free pool is exhausted. We do not bind temps or user vars to
-    /// these registers, and they are never part of the free list.
-    scratch_in_use: HashSet<&'static str>,
+pub struct GreedyRegAllocator {
+    // Current mapping of variables to registers
+    var_to_reg: HashMap<Var, Register>,
+    // Current mapping of registers to variables
+    reg_to_var: HashMap<Register, Var>,
+    
+    // Variables that have been modified in register and need write-back
+    dirty: HashSet<Var>,
+    
+    // Registers that are busy for the current instruction only
+    temp_busy: HashSet<Register>,
+    
+    // Stack slots for spilled Local/Temp variables
+    spilled: HashMap<Var, usize>, // var -> slot (1-based, -1[R13] = slot 1)
+    next_slot: usize,
+    max_slots: usize,
+    
+    // Linear allocation state
+    next_reg_idx: usize,
+    
+    // Used for LRU spilling
+    usage_order: Vec<Register>,
 }
 
-impl BasicRegAllocator {
+impl GreedyRegAllocator {
     pub fn new() -> Self {
-        // R1–R10 as general-purpose pool for Basic allocator.
-        // Keep R11/R12 reserved as dedicated scratch registers.
-        // R13/R14 are reserved by ABI; R15 is control.
-        let mut pool: Vec<&'static str> = vec![
-            "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10",
-        ];
-        // Allocate from the end for efficient pop()
-        pool.reverse();
         Self {
-            free: pool,
-            temp_regs: HashMap::new(),
-            reg_to_temp: HashMap::new(),
-            user_regs: HashMap::new(),
-            reg_to_user: HashMap::new(),
-            scratch_in_use: HashSet::new(),
+            var_to_reg: HashMap::new(),
+            reg_to_var: HashMap::new(),
+            dirty: HashSet::new(),
+            temp_busy: HashSet::new(),
+            spilled: HashMap::new(),
+            next_slot: 0,
+            max_slots: 0,
+            next_reg_idx: 0,
+            usage_order: Vec::new(),
         }
     }
 
-    fn alloc_reg(&mut self) -> Option<&'static str> { self.free.pop() }
+    fn touch(&mut self, reg: Register) {
+        if let Some(pos) = self.usage_order.iter().position(|&r| r == reg) {
+            self.usage_order.remove(pos);
+        }
+        self.usage_order.push(reg);
+    }
 
-    /// Allocate one of the reserved scratch registers (R11 or R12) if available.
-    /// Returns None if both are already in-use for the current expression/sequence.
-    fn alloc_scratch(&mut self) -> Option<&'static str> {
-        for r in ["R11", "R12"].iter() {
-            if !self.scratch_in_use.contains(r) {
-                self.scratch_in_use.insert(r);
-                return Some(*r);
+    fn get_spill_victim(&self) -> Register {
+        // Prefer caller-saved registers for spilling if possible
+        for &r in &self.usage_order {
+            if Register::CALLER_SAVED.contains(&r) && !self.temp_busy.contains(&r) {
+                return r;
             }
         }
-        None
+        // Fallback to the first one used that is not temp busy
+        for &r in &self.usage_order {
+            if !self.temp_busy.contains(&r) {
+                return r;
+            }
+        }
+        panic!("No registers to spill (all are temp busy)");
+    }
+}
+
+impl RegAllocator for GreedyRegAllocator {
+    fn bind_var_to_reg(&mut self, var: Var, reg: Register) {
+        // If var was elsewhere, unbind it
+        if let Some(old_reg) = self.var_to_reg.remove(&var) {
+            self.reg_to_var.remove(&old_reg);
+        }
+        // If reg was used by another var, unbind that var
+        if let Some(old_var) = self.reg_to_var.remove(&reg) {
+            self.var_to_reg.remove(&old_var);
+            self.dirty.remove(&old_var);
+        }
+        
+        self.var_to_reg.insert(var.clone(), reg);
+        self.reg_to_var.insert(reg, var);
+        self.touch(reg);
     }
 
-    #[allow(dead_code)]
-    pub fn bind_temp(&mut self, name: &str, r: &'static str) {
-        self.temp_regs.insert(name.to_string(), r);
-        self.reg_to_temp.insert(r, name.to_string());
+    fn mark_dirty(&mut self, var: &Var) {
+        if self.var_to_reg.contains_key(var) {
+            self.dirty.insert(var.clone());
+        }
     }
-}
 
-pub(crate) fn is_temp(name: &str) -> bool { name.starts_with("__t") }
+    fn clear_temp_busy(&mut self) {
+        self.temp_busy.clear();
+    }
 
-/// An advanced allocator scaffold. For now, it delegates to `BasicRegAllocator`
-/// but provides hooks/fields where future liveness/spilling logic will live.
-/// AdvancedRegAllocator is currently a thin scaffold that delegates to
-/// BasicRegAllocator. This keeps the API surface intact while we iterate
-/// on the basic allocator. In the future, this type will implement real
-/// liveness/spilling. For now it mirrors Basic behavior exactly.
-pub struct AdvancedRegAllocator {
-    inner: BasicRegAllocator,
-}
+    fn spill_reg(&mut self, reg: Register, out: &mut Vec<String>) {
+        if let Some(var) = self.reg_to_var.remove(&reg) {
+            self.var_to_reg.remove(&var);
+            let is_dirty = self.dirty.remove(&var);
+            
+            if var.is_reg_allocated() {
+                // Local or Temp: always spill to stack if we want to preserve it
+                let slot = *self.spilled.entry(var.clone()).or_insert_with(|| {
+                    self.next_slot += 1;
+                    self.max_slots = self.max_slots.max(self.next_slot);
+                    self.next_slot
+                });
+                out.push(format!("  store {}, {}[{}]", reg, slot - 1, Register::STACK_PTR));
+            } else if is_dirty {
+                // Global: only spill back to memory if dirty
+                out.push(format!("  store {},{}[{}]", reg, var.name, Register::ZERO_REG));
+            }
+        }
+        // Remove from usage order
+        if let Some(pos) = self.usage_order.iter().position(|&r| r == reg) {
+            self.usage_order.remove(pos);
+        }
+    }
 
-impl AdvancedRegAllocator {
-    pub fn new() -> Self { Self { inner: BasicRegAllocator::new() } }
-}
+    fn allocate_reg(&mut self, out: &mut Vec<String>) -> Register {
+        // 1. Try to find a register that is not bound to any variable and not temp busy
+        for &r in &Register::GP_REGS {
+            if !self.reg_to_var.contains_key(&r) && !self.temp_busy.contains(&r) {
+                self.touch(r);
+                self.temp_busy.insert(r);
+                return r;
+            }
+        }
+        
+        // 2. No free registers, spill one
+        let victim = self.get_spill_victim();
+        self.spill_reg(victim, out);
+        self.touch(victim);
+        self.temp_busy.insert(victim);
+        victim
+    }
 
-impl RegAllocator for BasicRegAllocator {
-    fn ensure_in_reg<F: FnMut(&str)>(
+    fn ensure_in_reg(
         &mut self,
         v: &Value,
         out: &mut Vec<String>,
-        mut note_user_var: F,
-    ) -> (&'static str, bool) {
+        note_user: &mut dyn FnMut(&str),
+    ) -> (Register, bool) {
         match v {
             Value::Imm(i) => {
-                if let Some(r) = self.alloc_reg() {
-                    out.push(format!("  lea {},{}[R0]", r, i));
-                    return (r, true);
-                }
-                if let Some(r) = self.alloc_scratch() {
-                    out.push(format!("  lea {},{}[R0]", r, i));
-                    return (r, true);
-                }
-                // Ultimate fallback: reuse R11 (should be rare). Mark as not freeable to avoid double-use.
-                out.push(format!("  lea {},{}[R0]", "R11", i));
-                ("R11", true)
+                let r = self.allocate_reg(out);
+                out.push(format!("  lea {},{}[{}]", r, i, Register::ZERO_REG));
+                (r, true) // Temp register, can be freed
             }
-            Value::Var(name) => {
-                if is_temp(name) {
-                    if let Some(&r) = self.temp_regs.get(name) { return (r, false); }
-                    if let Some(r) = self.alloc_reg() {
-                        self.temp_regs.insert(name.clone(), r);
-                        self.reg_to_temp.insert(r, name.clone());
-                        (r, false)
-                    } else if let Some((&victim_r, _)) = self.reg_to_user.iter().next() {
-                        // Evict a user-var binding to secure a real register for the temp.
-                        if let Some(victim_name) = self.reg_to_user.remove(&victim_r) {
-                            self.user_regs.remove(&victim_name);
-                        }
-                        self.temp_regs.insert(name.clone(), victim_r);
-                        self.reg_to_temp.insert(victim_r, name.clone());
-                        (victim_r, false)
-                    } else {
-                        // As a last resort only (should be extremely rare), use a scratch
-                        // transiently. This risks losing the temp value after use, so we
-                        // strongly prefer eviction above.
-                        if let Some(r) = self.alloc_scratch() { return (r, true); }
-                        ("R11", true)
-                    }
+            Value::Var(var) => {
+                if let Some(&r) = self.var_to_reg.get(var) {
+                    self.touch(r);
+                    self.temp_busy.insert(r);
+                    (r, false)
                 } else {
-                    // User variable: keep a resident binding to avoid redundant loads.
-                    if let Some(&r) = self.user_regs.get(name) {
-                        return (r, false);
-                    }
-                    // Try to allocate a new register; if none, recycle one from another user var.
-                    let r = if let Some(r) = self.alloc_reg() {
-                        r
-                    } else if let Some((&victim_r, _)) = self.reg_to_user.iter().next() {
-                        // Evict the victim's binding (memory already reflects latest value after stores)
-                        if let Some(victim_name) = self.reg_to_user.remove(&victim_r) {
-                            self.user_regs.remove(&victim_name);
+                    let r = self.allocate_reg(out);
+                    if var.is_reg_allocated() {
+                        if let Some(&slot) = self.spilled.get(var) {
+                            out.push(format!("  load {}, {}[{}]", r, slot - 1, Register::STACK_PTR));
                         }
-                        victim_r
-                    } else if let Some(r) = self.alloc_scratch() {
-                        // Use a reserved scratch register without caching
-                        note_user_var(name);
-                        out.push(format!("  load {},{}", r, name));
-                        return (r, true);
                     } else {
-                        // As a last resort, use a volatile general scratch (R3) without caching
-                        note_user_var(name);
-                        out.push(format!("  load {},{}", "R3", name));
-                        return ("R3", true);
-                    };
-                    // First touch: ensure symbol and load once, then keep cached binding.
-                    note_user_var(name);
-                    out.push(format!("  load {},{}", r, name));
-                    self.user_regs.insert(name.clone(), r);
-                    self.reg_to_user.insert(r, name.clone());
+                        note_user(&var.name);
+                        out.push(format!("  load {},{}[{}]", r, var.name, Register::ZERO_REG));
+                    }
+                    self.bind_var_to_reg(var.clone(), r);
+                    self.temp_busy.insert(r);
                     (r, false)
                 }
             }
             Value::AddrOf(name) => {
-                if let Some(r) = self.alloc_reg() {
-                    out.push(format!("  lea {},{}[R0]", r, name));
-                    return (r, true);
-                }
-                if let Some(r) = self.alloc_scratch() {
-                    out.push(format!("  lea {},{}[R0]", r, name));
-                    return (r, true);
-                }
-                ("R11", true)
-            }
-            Value::Arg(i) => {
-                let r = match *i { 1 => "R1", 2 => "R2", 3 => "R3", 4 => "R4", 5 => "R5", 6 => "R6", 7 => "R7", 8 => "R8", _ => "R1" };
-                (r, false)
+                note_user(name);
+                let r = self.allocate_reg(out);
+                out.push(format!("  lea {},{}[{}]", r, name, Register::ZERO_REG));
+                self.temp_busy.insert(r);
+                (r, true)
             }
         }
     }
 
-    fn free_reg(&mut self, r: &'static str) {
-        // Reserved scratch registers are not part of the general pool.
-        if r == "R11" || r == "R12" {
-            self.scratch_in_use.remove(&r);
-            return;
+    fn free_reg(&mut self, r: Register) {
+        if let Some(var) = self.reg_to_var.remove(&r) {
+            self.var_to_reg.remove(&var);
+            self.dirty.remove(&var);
         }
-        // Do not free registers that are currently bound to temps or user vars
-        if self.reg_to_temp.contains_key(&r) { return; }
-        if self.reg_to_user.contains_key(&r) { return; }
-        self.free.push(r);
+        if let Some(pos) = self.usage_order.iter().position(|&reg| reg == r) {
+            self.usage_order.remove(pos);
+        }
+    }
+
+    fn spill_caller_saved(&mut self, out: &mut Vec<String>) {
+        let regs_to_spill: Vec<Register> = self.reg_to_var.keys()
+            .filter(|&&r| Register::CALLER_SAVED.contains(&r))
+            .copied()
+            .collect();
+        for r in regs_to_spill {
+            self.spill_reg(r, out);
+        }
+    }
+
+    fn flush_all(&mut self, out: &mut Vec<String>) {
+        let regs: Vec<Register> = self.reg_to_var.keys().copied().collect();
+        for r in regs {
+            self.spill_reg(r, out);
+        }
+    }
+
+    fn flush_globals(&mut self, out: &mut Vec<String>) {
+        let regs: Vec<Register> = self.reg_to_var.iter()
+            .filter(|(_, v)| v.kind == crate::ir::VarKind::Global)
+            .map(|(&r, _)| r)
+            .collect();
+        for r in regs {
+            self.spill_reg(r, out);
+        }
     }
 
     fn begin_region(&mut self) {
-        // Reset allocator state for a new region (function or top-level block)
-        let mut pool: Vec<&'static str> = vec![
-            "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10",
-        ];
-        pool.reverse();
-        self.free = pool;
-        self.temp_regs.clear();
-        self.reg_to_temp.clear();
-        self.user_regs.clear();
-        self.reg_to_user.clear();
-        self.scratch_in_use.clear();
+        self.var_to_reg.clear();
+        self.reg_to_var.clear();
+        self.dirty.clear();
+        self.spilled.clear();
+        self.next_slot = 0;
+        self.max_slots = 0;
+        self.next_reg_idx = 0;
+        self.usage_order.clear();
     }
 
-    fn end_region(&mut self) -> usize { 0 }
-}
-
-impl RegAllocator for AdvancedRegAllocator {
-    fn ensure_in_reg<F: FnMut(&str)>(
-        &mut self,
-        v: &Value,
-        out: &mut Vec<String>,
-        note_user_var: F,
-    ) -> (&'static str, bool) {
-        self.inner.ensure_in_reg(v, out, note_user_var)
+    fn get_max_slots(&self) -> usize {
+        self.max_slots
     }
-
-    fn free_reg(&mut self, r: &'static str) { self.inner.free_reg(r); }
-
-    fn begin_region(&mut self) { self.inner.begin_region(); }
-    fn end_region(&mut self) -> usize { self.inner.end_region() }
 }

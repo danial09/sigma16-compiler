@@ -1,4 +1,4 @@
-array a[3];
+array a[3] = [1, 2, 3];
 
 x = 5;
 y = inc(x);
