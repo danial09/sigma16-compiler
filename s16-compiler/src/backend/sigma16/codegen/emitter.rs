@@ -278,7 +278,7 @@ impl Codegen {
         for item in items {
             match item {
                 AsmItem::Label(name) => {
-                    lines.push(format!("{}:", name));
+                    lines.push(name.clone());
                     mapping.push(None);
                 }
                 AsmItem::Instruction { text, ir_map } => {
@@ -292,7 +292,7 @@ impl Codegen {
                     epilogue,
                     ..
                 } => {
-                    lines.push(format!("{}:", name));
+                    lines.push(name.clone());
                     mapping.push(None);
                     Self::flatten_items(prologue, lines, mapping);
                     Self::flatten_items(body, lines, mapping);
