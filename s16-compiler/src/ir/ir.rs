@@ -89,7 +89,7 @@ impl ProgramIR {
                     } else {
                         "".to_string()
                     };
-                    out.push(format!("ARRAY {name}[{size}]{init_str}"));
+                    out.push(format!("  ARRAY {name}[{size}]{init_str}"));
                 }
             }
         }
@@ -216,4 +216,3 @@ impl std::fmt::Display for RelOp {
         write!(f, "{s}")
     }
 }
-
