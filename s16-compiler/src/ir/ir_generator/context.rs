@@ -1,4 +1,7 @@
 use crate::ir::*;
+use crate::ir::symbol_table::SymbolTable;
+use crate::ast::ast_ir::AstSpanRecord;
+use crate::{CompileError, SemanticErrorKind};
 
 #[derive(Debug, Clone)]
 pub struct FunctionCtx {
@@ -12,10 +15,12 @@ pub struct Gen {
     pub current_ast_node: Option<(AstNodeId, Option<ControlFlowComponent>)>,
     pub parent_component: Option<ControlFlowComponent>,
     pub fn_ctx: Option<FunctionCtx>,
+    pub symbols: SymbolTable,
+    pub ast_spans: Vec<AstSpanRecord>,
 }
 
 impl Gen {
-    pub fn new() -> Self {
+    pub fn new(ast_spans: Vec<AstSpanRecord>) -> Self {
         Self {
             out: ProgramIR::new(),
             temp_count: 0,
@@ -23,11 +28,38 @@ impl Gen {
             current_ast_node: None,
             parent_component: None,
             fn_ctx: None,
+            symbols: SymbolTable::new(),
+            ast_spans,
         }
     }
 
-    pub fn finish(self) -> ProgramIR {
-        self.out
+    pub fn finish(self) -> (ProgramIR, Vec<AstSpanRecord>) {
+        (self.out, self.ast_spans)
+    }
+
+    pub fn make_error(&self, kind: SemanticErrorKind, ast_id: AstNodeId, message: String) -> CompileError {
+        // Get span info for the AST node
+        let (line, col, offset) = if let Some(span_record) = self.ast_spans.iter().find(|s| s.id == ast_id) {
+            // Convert byte offset to line:col if we have source index
+            let (l, c) = self.out.source_map.source_index_ref()
+                .map(|idx| idx.to_line_col(span_record.start))
+                .unwrap_or((0, 0));
+            (l + 1, c + 1, span_record.start) // Convert to 1-based for display
+        } else {
+            (0, 0, 0)
+        };
+
+        CompileError::Semantic {
+            kind,
+            location: crate::SourceLocation {
+                line,
+                column: col,
+                offset,
+            },
+            line,
+            col,
+            message,
+        }
     }
 
     pub fn new_temp(&mut self) -> Var {

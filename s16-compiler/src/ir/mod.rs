@@ -9,3 +9,5 @@ pub mod source_map;
 pub use source_map::*;
 pub mod ir_generator;
 pub mod opt;
+pub mod symbol_table;
+pub mod error_utils;
