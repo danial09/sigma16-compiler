@@ -14,6 +14,14 @@ pub trait RegAllocator {
         out: &mut Vec<String>,
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool);
+    fn ensure_var_in_reg(
+        &mut self,
+        var: &Var,
+        out: &mut Vec<String>,
+        note_user: &mut dyn FnMut(&str),
+        prefer_reg: Option<Register>,
+    ) -> Register;
+    fn get_var_reg(&self, var: &Var) -> Option<Register>;
     fn free_reg(&mut self, r: Register);
     fn spill_caller_saved(&mut self, out: &mut Vec<String>);
     fn flush_all(&mut self, out: &mut Vec<String>);
@@ -102,7 +110,7 @@ impl RegAllocator for GreedyRegAllocator {
             self.var_to_reg.remove(&old_var);
             self.dirty.remove(&old_var);
         }
-        
+
         self.var_to_reg.insert(var.clone(), reg);
         self.reg_to_var.insert(reg, var);
         self.touch(reg);
@@ -200,6 +208,52 @@ impl RegAllocator for GreedyRegAllocator {
                 (r, true)
             }
         }
+    }
+
+    fn ensure_var_in_reg(
+        &mut self,
+        var: &Var,
+        out: &mut Vec<String>,
+        note_user: &mut dyn FnMut(&str),
+        prefer_reg: Option<Register>,
+    ) -> Register {
+        // If variable is already in a register, return it
+        if let Some(&r) = self.var_to_reg.get(var) {
+            self.touch(r);
+            self.temp_busy.insert(r);
+            return r;
+        }
+
+        // If a preferred register is specified and available, use it
+        let r = if let Some(pref) = prefer_reg {
+            if !self.reg_to_var.contains_key(&pref) && !self.temp_busy.contains(&pref) {
+                self.touch(pref);
+                self.temp_busy.insert(pref);
+                pref
+            } else {
+                self.allocate_reg(out)
+            }
+        } else {
+            self.allocate_reg(out)
+        };
+
+        // Load variable into register
+        if var.is_reg_allocated() {
+            if let Some(&slot) = self.spilled.get(var) {
+                out.push(format!("  load {}, {}[{}]", r, slot - 1, Register::STACK_PTR));
+            }
+        } else {
+            note_user(&var.name);
+            out.push(format!("  load {},{}[{}]", r, var.name, Register::ZERO_REG));
+        }
+
+        self.bind_var_to_reg(var.clone(), r);
+        self.temp_busy.insert(r);
+        r
+    }
+
+    fn get_var_reg(&self, var: &Var) -> Option<Register> {
+        self.var_to_reg.get(var).copied()
     }
 
     fn free_reg(&mut self, r: Register) {

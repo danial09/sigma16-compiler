@@ -57,6 +57,12 @@ pub enum Stmt {
         id: AstNodeId,
         expr: Expr,
     },
+    /// String declaration: name = "abc";
+    StringDecl {
+        id: AstNodeId,
+        name: String,
+        value: String,
+    },
 }
 
 impl Stmt {
@@ -70,6 +76,7 @@ impl Stmt {
             Stmt::Function { id, .. } => *id,
             Stmt::Return { id, .. } => *id,
             Stmt::ExprStmt { id, .. } => *id,
+            Stmt::StringDecl { id, .. } => *id,
         }
     }
 }
@@ -133,6 +140,7 @@ pub enum BinOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Not,
+    Neg,
     // Note: address-of and deref are represented as dedicated Expr variants
 }
 

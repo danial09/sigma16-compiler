@@ -26,7 +26,8 @@ impl Gen {
             }
             Stmt::ArrayDecl { id, name, size, initial_values } => {
                 self.with_ast_context(*id, None, |this| {
-                    this.out.arrays.push((name.clone(), *size, initial_values.clone()));
+                    let ir_idx = this.out.instrs.len();
+                    this.out.arrays.push((name.clone(), *size, initial_values.clone(), Some(ir_idx)));
                     this.emit(Instr::ArrayDecl {
                         name: name.clone(),
                         size: *size,
@@ -49,6 +50,20 @@ impl Gen {
             Stmt::ExprStmt { id, expr } => {
                 self.with_ast_context(*id, None, |this| {
                     let _ = this.eval_as_value(expr);
+                });
+            }
+            Stmt::StringDecl { id, name, value } => {
+                self.with_ast_context(*id, None, |this| {
+                    let mut vals: Vec<i64> = value.chars().map(|c| c as i64).collect();
+                    vals.push(0); // null terminator
+                    let size = vals.len();
+                    let ir_idx = this.out.instrs.len();
+                    this.out.arrays.push((name.clone(), size, Some(vals.clone()), Some(ir_idx)));
+                    this.emit(Instr::ArrayDecl {
+                        name: name.clone(),
+                        size,
+                        initial_values: Some(vals),
+                    });
                 });
             }
         }
@@ -205,21 +220,23 @@ impl Gen {
         }
     }
 
-    pub fn lower_function(&mut self, _ast_id: AstNodeId, name: &str, params: &[String], body: &[Stmt]) {
-        self.emit(Instr::FuncStart {
-            name: name.to_string(),
-            params: params.to_vec(),
-        });
+    pub fn lower_function(&mut self, ast_id: AstNodeId, name: &str, params: &[String], body: &[Stmt]) {
+        self.with_ast_context(ast_id, None, |this| {
+            this.emit(Instr::FuncStart {
+                name: name.to_string(),
+                params: params.to_vec(),
+            });
 
-        let prev_ctx = self.fn_ctx.take();
-        self.fn_ctx = Some(FunctionCtx { had_return: false });
+            let prev_ctx = this.fn_ctx.take();
+            this.fn_ctx = Some(FunctionCtx { had_return: false });
 
-        self.emit_block(body);
+            this.emit_block(body);
 
-        self.fn_ctx = prev_ctx;
+            this.fn_ctx = prev_ctx;
 
-        self.emit(Instr::FuncEnd {
-            name: name.to_string(),
+            this.emit(Instr::FuncEnd {
+                name: name.to_string(),
+            });
         });
     }
 }

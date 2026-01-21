@@ -113,6 +113,19 @@ impl Gen {
                 let tmp = this.lower_bool_expr(e);
                 Value::Var(tmp)
             }
+            Expr::Unary { op: ast_ir::UnOp::Neg, operand, .. } => {
+                let v = this.eval_as_value(operand);
+                let tmp = this.new_temp();
+                this.emit(Instr::Assign {
+                    dst: tmp.clone(),
+                    src: Rhs::Binary {
+                        op: ArithOp::Sub,
+                        left: Value::Imm(0),
+                        right: v,
+                    },
+                });
+                Value::Var(tmp)
+            }
             Expr::Binary { left, op, right, .. } => {
                 if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div) {
                     let lv = this.eval_as_value(left);

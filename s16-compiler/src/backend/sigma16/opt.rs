@@ -36,7 +36,7 @@ impl AsmPass for JumpOptimizer {
                 let trimmed = text.trim();
                 if trimmed.starts_with("jump ") {
                     let target = &trimmed[5..];
-                    if let AsmItem::Label(label_name) = &items[i+1] {
+                    if let AsmItem::Label(label_name, _) = &items[i+1] {
                         if label_name == target {
                             remove = true;
                         }

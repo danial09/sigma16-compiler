@@ -252,7 +252,7 @@ fn compile_snapshot_internal(source: &str, opts: &CompileOptions) -> ProgramSnap
             let arrays: Vec<WasmArrayDecl> = ir
                 .arrays
                 .iter()
-                .map(|(n, sz, init)| WasmArrayDecl {
+                .map(|(n, sz, init, _ir_map)| WasmArrayDecl {
                     name: n.clone(),
                     size: *sz,
                     initial_values: init.clone(),

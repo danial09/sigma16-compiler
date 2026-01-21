@@ -8,8 +8,8 @@ pub struct ProgramIR {
     pub instrs: Vec<Instr>,
     /// Mappings to original source code.
     pub source_map: SourceMap,
-    /// Declared fixed-size arrays (name, length, optional initial values).
-    pub arrays: Vec<(String, usize, Option<Vec<i64>>)>,
+    /// Declared fixed-size arrays (name, length, optional initial values, ir_mapping).
+    pub arrays: Vec<(String, usize, Option<Vec<i64>>, Option<usize>)>,
 }
 impl ProgramIR {
     pub fn new() -> Self {

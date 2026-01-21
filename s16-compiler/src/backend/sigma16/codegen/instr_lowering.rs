@@ -99,11 +99,44 @@ impl Codegen {
                         ArithOp::Mul => "mul",
                         ArithOp::Div => "div",
                     };
-                    let (rl, free_l) = self.ensure_in_reg(left);
-                    let (rr, free_r) = self.ensure_in_reg(right);
-                    let (rd, _) = self.ensure_in_reg(&Value::Var(dst.clone()));
+
+                    // Check if dst is already one of the operands
+                    let dst_is_left = matches!(left, Value::Var(v) if v == dst);
+                    let dst_is_right = matches!(right, Value::Var(v) if v == dst);
+
+                    // Strategy: Load dst operand first if it exists, to reuse the register
+                    let (rl, free_l, rr, free_r, rd) = if dst_is_left {
+                        // Load left (which is dst) first, then right
+                        let (rl, free_l) = self.ensure_in_reg(left);
+                        let (rr, free_r) = self.ensure_in_reg(right);
+                        (rl, free_l, rr, free_r, rl)
+                    } else if dst_is_right && (*op == ArithOp::Add || *op == ArithOp::Mul) {
+                        // For commutative ops, if dst is right, swap operands
+                        let (rr, free_r) = self.ensure_in_reg(right);
+                        let (rl, free_l) = self.ensure_in_reg(left);
+                        (rl, free_l, rr, free_r, rr)
+                    } else {
+                        // Standard case: load operands, then allocate for dst
+                        let (rl, free_l) = self.ensure_in_reg(left);
+                        let (rr, free_r) = self.ensure_in_reg(right);
+
+                        // Try to reuse one of the operand registers if it's temporary
+                        let rd = if free_l {
+                            rl
+                        } else if free_r && (*op == ArithOp::Add || *op == ArithOp::Mul) {
+                            rr
+                        } else {
+                            self.ensure_var_in_reg(dst, None)
+                        };
+                        (rl, free_l, rr, free_r, rd)
+                    };
+
                     self.emit(format!("  {op_str} {rd},{rl},{rr}"));
+
+                    // Bind destination to register if not already bound
+                    self.reg.bind_var_to_reg(dst.clone(), rd);
                     self.reg.mark_dirty(dst);
+
                     if free_l && rl != rd {
                         self.reg.free_reg(rl);
                     }

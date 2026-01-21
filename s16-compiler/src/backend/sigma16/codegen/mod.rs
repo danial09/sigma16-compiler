@@ -67,6 +67,8 @@ impl Codegen {
             });
             self.emitted_header = true;
         }
+        // Initialize register allocation for top-level code
+        self.reg.begin_region();
         for (ir_index, instr) in ir.instrs.iter().enumerate() {
             self.current_ir = Some(ir_index);
             self.emit_instr(instr);
