@@ -58,26 +58,26 @@ pub struct PrologueEpilogueOptimizer;
 impl AsmPass for PrologueEpilogueOptimizer {
     fn run(&self, items: &mut Vec<AsmItem>) {
         for item in items.iter_mut() {
-            if let AsmItem::Function { 
-                prologue, 
-                epilogue, 
-                frame_size, 
-                used_callee, 
+            if let AsmItem::Function {
+                prologue,
+                epilogue,
+                frame_size,
+                used_callee,
                 is_leaf,
-                .. 
+                ..
             } = item {
                 // If it's a leaf function and doesn't use any stack space beyond R14
                 // and doesn't use any callee-saved registers.
                 // frame_size here is max_slots.
                 if *is_leaf && *frame_size == 0 && used_callee.is_empty() {
                     prologue.clear();
-                    
+
                     // The epilogue normally contains:
                     // 1. restore callee-saved
                     // 2. lea R13, frame+1[R13]
                     // 3. load R14, -1[R13]
                     // 4. jump 0[R14]
-                    
+
                     // We want to keep only the jump.
                     if let Some(jump_instr) = epilogue.last().cloned() {
                         if let AsmItem::Instruction { text, .. } = &jump_instr {
@@ -93,8 +93,64 @@ impl AsmPass for PrologueEpilogueOptimizer {
     }
 }
 
+/// Removes redundant instructions like `add Rx,R0,Rx` and store/load pairs
+pub struct PeepholeOptimizer;
+
+impl AsmPass for PeepholeOptimizer {
+    fn run(&self, items: &mut Vec<AsmItem>) {
+        Self::optimize_function_bodies(items);
+    }
+}
+
+impl PeepholeOptimizer {
+    fn optimize_function_bodies(items: &mut Vec<AsmItem>) {
+        for item in items.iter_mut() {
+            if let AsmItem::Function { body, .. } = item {
+                Self::optimize_instructions(body);
+            }
+        }
+        // Also optimize top-level instructions
+        Self::optimize_instructions(items);
+    }
+
+    fn optimize_instructions(instrs: &mut Vec<AsmItem>) {
+        let mut i = 0;
+        while i < instrs.len() {
+            let mut remove = false;
+
+            if let AsmItem::Instruction { text, .. } = &instrs[i] {
+                let trimmed = text.trim();
+
+                // Remove redundant `add Rx,R0,Rx`
+                if trimmed.starts_with("add ") {
+                    let parts: Vec<&str> = trimmed.split(',').collect();
+                    if parts.len() == 3 {
+                        let dst = parts[0].split_whitespace().nth(1);
+                        let src1 = parts[1].trim();
+                        let src2 = parts[2].trim();
+
+                        if let Some(dst_reg) = dst {
+                            // Check if it's `add Rx,R0,Rx`
+                            if src1 == "R0" && src2 == dst_reg {
+                                remove = true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if remove {
+                instrs.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
 pub fn optimize(items: &mut Vec<AsmItem>) {
     let mut pm = PassManager::new();
+    pm.add_pass(Box::new(PeepholeOptimizer));
     pm.add_pass(Box::new(JumpOptimizer));
     pm.add_pass(Box::new(PrologueEpilogueOptimizer));
     pm.run(items);

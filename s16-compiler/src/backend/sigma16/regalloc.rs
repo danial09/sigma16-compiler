@@ -38,7 +38,7 @@ pub enum AllocatorKind {
 
 pub struct GreedyRegAllocator {
     // Current mapping of variables to registers
-    var_to_reg: HashMap<Var, Register>,
+    var_to_reg: HashMap<Var,Register>,
     // Current mapping of registers to variables
     reg_to_var: HashMap<Register, Var>,
     
@@ -49,7 +49,9 @@ pub struct GreedyRegAllocator {
     temp_busy: HashSet<Register>,
     
     // Stack slots for spilled Local/Temp variables
-    spilled: HashMap<Var, usize>, // var -> slot (1-based, -1[R13] = slot 1)
+    // Sigma16 stack grows upward, so slots are at negative offsets from R13
+    // slot 1 = -total_frame+1[R13], slot 2 = -total_frame+2[R13], etc.
+    spilled: HashMap<Var, usize>, // var -> slot (1-based)
     next_slot: usize,
     max_slots: usize,
     
@@ -138,10 +140,13 @@ impl RegAllocator for GreedyRegAllocator {
                     self.max_slots = self.max_slots.max(self.next_slot);
                     self.next_slot
                 });
-                out.push(format!("  store {}, {}[{}]", reg, slot - 1, Register::STACK_PTR));
+                // Stack grows upward: R13 points above frame, so use negative offset
+                // slot 1 is at -(max_slots)[R13], slot 2 at -(max_slots-1)[R13], etc.
+                let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                out.push(format!("  store {},{}[{}]",reg,offset,Register::STACK_PTR));
             } else if is_dirty {
                 // Global: only spill back to memory if dirty
-                out.push(format!("  store {},{}[{}]", reg, var.name, Register::ZERO_REG));
+                out.push(format!("  store {},{}[{}]", reg, var.name,Register::ZERO_REG));
             }
         }
         // Remove from usage order
@@ -177,7 +182,7 @@ impl RegAllocator for GreedyRegAllocator {
         match v {
             Value::Imm(i) => {
                 let r = self.allocate_reg(out);
-                out.push(format!("  lea {},{}[{}]", r, i, Register::ZERO_REG));
+                out.push(format!("  lea {},{}[{}]", r, i,Register::ZERO_REG));
                 (r, true) // Temp register, can be freed
             }
             Value::Var(var) => {
@@ -189,11 +194,13 @@ impl RegAllocator for GreedyRegAllocator {
                     let r = self.allocate_reg(out);
                     if var.is_reg_allocated() {
                         if let Some(&slot) = self.spilled.get(var) {
-                            out.push(format!("  load {}, {}[{}]", r, slot - 1, Register::STACK_PTR));
+                            // Stack grows upward: R13 points above frame, so use negative offset
+                            let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                            out.push(format!("  load {},{}[{}]",r,offset,Register::STACK_PTR));
                         }
                     } else {
                         note_user(&var.name);
-                        out.push(format!("  load {},{}[{}]", r, var.name, Register::ZERO_REG));
+                        out.push(format!("  load {},{}[{}]", r, var.name,Register::ZERO_REG));
                     }
                     self.bind_var_to_reg(var.clone(), r);
                     self.temp_busy.insert(r);
@@ -203,7 +210,7 @@ impl RegAllocator for GreedyRegAllocator {
             Value::AddrOf(name) => {
                 note_user(name);
                 let r = self.allocate_reg(out);
-                out.push(format!("  lea {},{}[{}]", r, name, Register::ZERO_REG));
+                out.push(format!("  lea {},{}[{}]", r, name,Register::ZERO_REG));
                 self.temp_busy.insert(r);
                 (r, true)
             }
@@ -240,11 +247,13 @@ impl RegAllocator for GreedyRegAllocator {
         // Load variable into register
         if var.is_reg_allocated() {
             if let Some(&slot) = self.spilled.get(var) {
-                out.push(format!("  load {}, {}[{}]", r, slot - 1, Register::STACK_PTR));
+                // Stack grows upward: R13 points above frame, so use negative offset
+                let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                out.push(format!("  load {}, {}[{}]",r,offset,Register::STACK_PTR));
             }
         } else {
             note_user(&var.name);
-            out.push(format!("  load {},{}[{}]", r, var.name, Register::ZERO_REG));
+            out.push(format!("  load {},{}[{}]", r, var.name,Register::ZERO_REG));
         }
 
         self.bind_var_to_reg(var.clone(), r);

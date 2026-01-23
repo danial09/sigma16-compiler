@@ -94,7 +94,7 @@ impl Codegen {
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {}, -{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!("  lea {},{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
                     ir_map: None,
                 });
             }
@@ -103,7 +103,7 @@ impl Codegen {
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {}, {}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!("  lea {},-{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
                     ir_map: None,
                 });
             }
@@ -147,43 +147,59 @@ impl Codegen {
         let mut prologue = Vec::new();
         let mut epilogue = Vec::new();
 
-        // Save return address
+        // Sigma16 stack grows UPWARD
+        // Stack layout when function is active:
+        // [old_R13+0]: Return address (R14)
+        // [old_R13+1]: First local/spill slot
+        // [old_R13+2]: Second local/spill slot
+        // ...
+        // [old_R13+max_slots]: Last local/spill slot
+        // [old_R13+max_slots+1]: First callee-saved register
+        // ...
+        // [old_R13+total_frame-1]: Last callee-saved register
+        // [old_R13+total_frame]: <-- new R13 points here
+
+        // Save return address at current stack pointer
         prologue.push(AsmItem::Instruction {
-            text: format!("  store {}, -1[{}]", Register::LINK_REG, Register::STACK_PTR),
+            text: format!("  store {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
             ir_map: None,
         });
 
-        // Adjust stack for local variables, callee-saved regs, and R14
+        // Adjust stack pointer upward for return address, local variables, and callee-saved regs
         let total_frame = frame + 1;
         prologue.push(AsmItem::Instruction {
-            text: format!("  lea {}, -{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!("  lea {},{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
             ir_map: None,
         });
 
         // Save callee-saved registers
+        // They are stored relative to the NEW stack pointer (looking backward)
         for (i, &reg) in used_callee.iter().enumerate() {
-            let disp = max_slots + i; // 0-based index within the extra frame part
+            let disp = -(1 + saved_count as i32) + i as i32;
             prologue.push(AsmItem::Instruction {
-                text: format!("  store {}, {}[{}]", reg, disp, Register::STACK_PTR),
+                text: format!("  store {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
             });
         }
 
         // Restore callee-saved registers
         for (i, &reg) in used_callee.iter().enumerate().rev() {
-            let disp = max_slots + i;
+            let disp = -(1 + saved_count as i32) + i as i32;
             epilogue.push(AsmItem::Instruction {
-                text: format!("  load {}, {}[{}]", reg, disp, Register::STACK_PTR),
+                text: format!("  load {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
             });
         }
 
+        // Move stack pointer back down
         epilogue.push(AsmItem::Instruction {
-            text: format!("  lea {}, {}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!("  lea {},-{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
             ir_map: None,
         });
+
+        // Restore return address
         epilogue.push(AsmItem::Instruction {
-            text: format!("  load {}, -1[{}]", Register::LINK_REG, Register::STACK_PTR),
+            text: format!("  load {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
             ir_map: None,
         });
 
@@ -246,9 +262,6 @@ impl Codegen {
     }
 
     pub fn finish_codegen(mut self) -> super::Sigma16Asm {
-        // trap instruction to terminate program
-        self.emit("  trap R0,R0,R0");
-
         let mut out = Vec::new();
         self.reg.flush_all(&mut out);
         for l in out {
@@ -259,6 +272,12 @@ impl Codegen {
         if self.func_buf.is_some() {
             self.flush_function();
         }
+
+        // trap instruction to terminate program
+        self.out.push(AsmItem::Instruction {
+            text: "  trap R0,R0,R0".to_string(),
+            ir_map: None,
+        });
 
         self.out.push(AsmItem::Instruction {
             text: String::new(),
@@ -303,7 +322,8 @@ impl Codegen {
         for item in items {
             match item {
                 AsmItem::Label(name, ir_map) => {
-                    lines.push(format!("{}:", name));
+                    // Sigma16 labels should NOT have colons
+                    lines.push(name.clone());
                     mapping.push(*ir_map);
                 }
                 AsmItem::Instruction { text, ir_map } => {
@@ -318,7 +338,8 @@ impl Codegen {
                     epilogue,
                     ..
                 } => {
-                    lines.push(format!("{}:", name));
+                    // Sigma16 labels should NOT have colons
+                    lines.push(name.clone());
                     mapping.push(*ir_map);
                     Self::flatten_items(prologue, lines, mapping);
                     Self::flatten_items(body, lines, mapping);
