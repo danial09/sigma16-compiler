@@ -1,4 +1,3 @@
-
 // compiler/src/grammar.lalrpop
 
 use crate::ast::ast_ir::*;
@@ -52,6 +51,7 @@ extern {
         "Comma"    => Token::Comma,
         "Amp"      => Token::Amp,
         "Semicolon" => Token::Semicolon,
+        "String"   => Token::String(<String>),
     }
 }
 
@@ -63,21 +63,44 @@ pub Program: Program =
 // ========== Statements ==========
 
 Stmt: Stmt = {
-    AssignStmt,
     IfStmt,
     WhileStmt,
     ForStmt,
     ReturnStmt,
     FunctionDef,
     ArrayDeclStmt,
-    CallStmt,
+    IdentBasedStmt,
+    DereferencedAssignStmt,
 };
 
-AssignStmt: Stmt =
-    <l:@L> <target:LValue> "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
+IdentBasedStmt: Stmt = {
+    <l:@L> <name:"Ident"> "Assign" <value:"String"> "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::StringDecl { id, name: name.into(), value }
+    },
+    <l:@L> <v:"Ident"> "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Assign);
-        Stmt::Assign { id, target, value }
+        Stmt::Assign { id, target: LValue::Var(v.into()), value }
+    },
+    <l:@L> <v:"Ident"> "LBracket" <idx:ExprOr> "RBracket" "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Assign);
+        Stmt::Assign { id, target: LValue::Index { base: v.into(), index: idx }, value }
+    },
+    <l:@L> <name:"Ident"> "LParen" <args:ArgList?> "RParen" "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Stmt::ExprStmt { id, expr: Expr::Call { id, name: name.into(), args: args.unwrap_or_default() } }
+    },
+};
+
+DereferencedAssignStmt: Stmt = 
+    <l:@L> "Mul" <e:ExprUnary> "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Assign);
+        Stmt::Assign { id, target: LValue::Deref(Box::new(e)), value }
     };
 
 ArrayDeclStmt: Stmt = {
@@ -156,12 +179,7 @@ ReturnStmt: Stmt =
     };
 
 // Standalone function call as statement (ignored return)
-CallStmt: Stmt =
-    <l:@L> <name:"Ident"> "LParen" <args:ArgList?> "RParen" "Semicolon" <r:@R> => {
-        let id = id_gen.borrow_mut().next();
-        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
-        Stmt::ExprStmt { id, expr: Expr::Call { id, name: name.into(), args: args.unwrap_or_default() } }
-    };
+// Handled in IdentBasedStmt
 
 // ========== Expressions (Precedence Climbing) ==========
 
@@ -240,6 +258,11 @@ ExprUnary: Expr = {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
         Expr::Unary { id, op: UnOp::Not, operand: Box::new(operand) }
+    },
+    <l:@L> "Minus" <operand:ExprUnary> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Expr::Unary { id, op: UnOp::Neg, operand: Box::new(operand) }
     },
     // Address-of a variable
     <l:@L> "Amp" <v:"Ident"> <r:@R> => {

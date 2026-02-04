@@ -1,27 +1,31 @@
 use crate::ast::ast_ir::{self, BinOp as AstBinOp, Expr, UnOp};
 use crate::ir::*;
+use crate::ir::symbol_table::SymbolKind;
+use crate::{CompileError, SemanticErrorKind};
 use super::context::Gen;
 
 impl Gen {
     /// Lower condition: if false → GOTO target (fall through on true)
-    pub fn lower_condition_branch_false(&mut self, cond: &Expr, target: &str) {
+    pub fn lower_condition_branch_false(&mut self, cond: &Expr, target: &str) -> Result<(), CompileError> {
         match cond {
             Expr::Binary { op: AstBinOp::And, left, right, .. } => {
-                self.lower_condition_branch_false(left, target);
-                self.lower_condition_branch_false(right, target);
+                self.lower_condition_branch_false(left, target)?;
+                self.lower_condition_branch_false(right, target)?;
+                Ok(())
             }
             Expr::Binary { op: AstBinOp::Or, left, right, .. } => {
                 let mid = self.new_label();
-                self.lower_condition_branch_false(left, &mid);
-                self.lower_condition_branch_false(right, target);
+                self.lower_condition_branch_false(left, &mid)?;
+                self.lower_condition_branch_false(right, target)?;
                 self.emit(Instr::Label(mid));
+                Ok(())
             }
             Expr::Unary { op: UnOp::Not, operand, .. } => {
-                self.lower_condition_branch_true(operand, target);
+                self.lower_condition_branch_true(operand, target)
             }
             Expr::Binary { op, left, right, .. } if is_rel(*op) => {
-                let l = self.eval_as_value(left);
-                let r = self.eval_as_value(right);
+                let l = self.eval_as_value(left)?;
+                let r = self.eval_as_value(right)?;
                 let inv_op = invert_rel(*op);
                 self.emit(Instr::IfCmpGoto {
                     left: l,
@@ -29,38 +33,42 @@ impl Gen {
                     right: r,
                     target: target.to_string(),
                 });
+                Ok(())
             }
             _ => {
-                let v = self.eval_as_value(cond);
+                let v = self.eval_as_value(cond)?;
                 self.emit(Instr::IfCmpGoto {
                     left: v,
                     op: RelOp::Eq,
                     right: Value::Imm(0),
                     target: target.to_string(),
                 });
+                Ok(())
             }
         }
     }
 
     /// Lower condition: if true → GOTO target (fall through on false)
-    pub fn lower_condition_branch_true(&mut self, cond: &Expr, target: &str) {
+    pub fn lower_condition_branch_true(&mut self, cond: &Expr, target: &str) -> Result<(), CompileError> {
         match cond {
             Expr::Binary { op: AstBinOp::And, left, right, .. } => {
                 let after = self.new_label();
-                self.lower_condition_branch_false(left, &after);
-                self.lower_condition_branch_true(right, target);
+                self.lower_condition_branch_false(left, &after)?;
+                self.lower_condition_branch_true(right, target)?;
                 self.emit(Instr::Label(after));
+                Ok(())
             }
             Expr::Binary { op: AstBinOp::Or, left, right, .. } => {
-                self.lower_condition_branch_true(left, target);
-                self.lower_condition_branch_true(right, target);
+                self.lower_condition_branch_true(left, target)?;
+                self.lower_condition_branch_true(right, target)?;
+                Ok(())
             }
             Expr::Unary { op: UnOp::Not, operand, .. } => {
-                self.lower_condition_branch_false(operand, target);
+                self.lower_condition_branch_false(operand, target)
             }
             Expr::Binary { op, left, right, .. } if is_rel(*op) => {
-                let l = self.eval_as_value(left);
-                let r = self.eval_as_value(right);
+                let l = self.eval_as_value(left)?;
+                let r = self.eval_as_value(right)?;
                 let direct_op = map_rel(*op);
                 self.emit(Instr::IfCmpGoto {
                     left: l,
@@ -68,26 +76,28 @@ impl Gen {
                     right: r,
                     target: target.to_string(),
                 });
+                Ok(())
             }
             _ => {
-                let v = self.eval_as_value(cond);
+                let v = self.eval_as_value(cond)?;
                 self.emit(Instr::IfCmpGoto {
                     left: v,
                     op: RelOp::Neq,
                     right: Value::Imm(0),
                     target: target.to_string(),
                 });
+                Ok(())
             }
         }
     }
 
     /// Materialize a boolean expression to a temp containing 0 or 1 (with short-circuit where possible)
-    pub fn lower_bool_expr(&mut self, cond: &Expr) -> Var {
+    pub fn lower_bool_expr(&mut self, cond: &Expr) -> Result<Var, CompileError> {
         let tmp = self.new_temp();
         let true_label = self.new_label();
         let end_label = self.new_label();
 
-        self.lower_condition_branch_true(cond, &true_label);
+        self.lower_condition_branch_true(cond, &true_label)?;
 
         self.emit(Instr::Assign {
             dst: tmp.clone(),
@@ -102,21 +112,62 @@ impl Gen {
         });
 
         self.emit(Instr::Label(end_label));
-        tmp
+        Ok(tmp)
     }
 
-    pub fn eval_as_value(&mut self, e: &Expr) -> Value {
+    pub fn eval_as_value(&mut self, e: &Expr) -> Result<Value, CompileError> {
         self.with_ast_context(e.id(), None, |this| match e {
-            Expr::Number(_, n) => Value::Imm(*n),
-            Expr::Variable(_, name) => Value::Var(this.get_var(name.clone())),
-            Expr::Unary { op: ast_ir::UnOp::Not, .. } => {
-                let tmp = this.lower_bool_expr(e);
-                Value::Var(tmp)
+            Expr::Number(_, n) => Ok(Value::Imm(*n)),
+
+            Expr::Variable(id, name) => {
+                // Validate: Check if variable is defined
+                match this.symbols.lookup(name) {
+                    Some(info) => {
+                        match info.kind {
+                            SymbolKind::Variable => Ok(Value::Var(this.get_var(name.clone()))),
+                            SymbolKind::Array => Err(this.make_error(
+                                SemanticErrorKind::ArrayUsedAsVariable,
+                                *id,
+                                format!("Array '{}' used as variable (try {}[index])", name, name),
+                            )),
+                            SymbolKind::Function => Err(this.make_error(
+                                SemanticErrorKind::FunctionUsedAsVariable,
+                                *id,
+                                format!("Function '{}' used as variable (try {}())", name, name),
+                            )),
+                        }
+                    }
+                    None => {
+                        // If not found in symbol table, treat as implicit variable declaration
+                        // This matches the original behavior where variables don't need explicit declaration
+                        Ok(Value::Var(this.get_var(name.clone())))
+                    }
+                }
             }
+
+            Expr::Unary { op: ast_ir::UnOp::Not, .. } => {
+                let tmp = this.lower_bool_expr(e)?;
+                Ok(Value::Var(tmp))
+            }
+
+            Expr::Unary { op: ast_ir::UnOp::Neg, operand, .. } => {
+                let v = this.eval_as_value(operand)?;
+                let tmp = this.new_temp();
+                this.emit(Instr::Assign {
+                    dst: tmp.clone(),
+                    src: Rhs::Binary {
+                        op: ArithOp::Sub,
+                        left: Value::Imm(0),
+                        right: v,
+                    },
+                });
+                Ok(Value::Var(tmp))
+            }
+
             Expr::Binary { left, op, right, .. } => {
                 if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div) {
-                    let lv = this.eval_as_value(left);
-                    let rv = this.eval_as_value(right);
+                    let lv = this.eval_as_value(left)?;
+                    let rv = this.eval_as_value(right)?;
                     let arith_op = map_arith(*op);
                     let tmp = this.new_temp();
                     this.emit(Instr::Assign {
@@ -127,50 +178,101 @@ impl Gen {
                             right: rv,
                         },
                     });
-                    Value::Var(tmp)
+                    Ok(Value::Var(tmp))
                 } else {
                     // Relational or logical → materialize to 0/1
-                    let tmp = this.lower_bool_expr(e);
-                    Value::Var(tmp)
+                    let tmp = this.lower_bool_expr(e)?;
+                    Ok(Value::Var(tmp))
                 }
             }
-            Expr::AddrOf(_, name) => Value::AddrOf(name.clone()),
+
+            Expr::AddrOf(_, name) => Ok(Value::AddrOf(name.clone())),
+
             Expr::Deref(_, ptr) => {
-                let addr = this.eval_as_pointer_expr(ptr);
+                let addr = this.eval_as_pointer_expr(ptr)?;
                 let tmp = this.new_temp();
                 this.emit(Instr::Load { dst: tmp.clone(), addr });
-                Value::Var(tmp)
+                Ok(Value::Var(tmp))
             }
-            Expr::Index { base, index, .. } => {
-                let index_v = this.eval_as_value(index);
-                let tmp = this.new_temp();
-                this.emit(Instr::ArrayLoad {
-                    dst: tmp.clone(),
-                    base: base.clone(),
-                    index: index_v,
-                });
-                Value::Var(tmp)
-            }
-            Expr::Call { name, args, .. } => {
-                let mut vs = Vec::new();
-                for a in args {
-                    vs.push(this.eval_as_value(a));
+
+            Expr::Index { id, base, index } => {
+                // Validate: Check if base is an array
+                match this.symbols.lookup_global(base) {
+                    Some(info) if matches!(info.kind, SymbolKind::Array) => {
+                        let index_v = this.eval_as_value(index)?;
+                        let tmp = this.new_temp();
+                        this.emit(Instr::ArrayLoad {
+                            dst: tmp.clone(),
+                            base: base.clone(),
+                            index: index_v,
+                        });
+                        Ok(Value::Var(tmp))
+                    }
+                    Some(_info) => Err(this.make_error(
+                        SemanticErrorKind::VariableUsedAsArray,
+                        *id,
+                        format!("Variable '{}' used as array", base),
+                    )),
+                    None => Err(this.make_error(
+                        SemanticErrorKind::UndefinedArray,
+                        *id,
+                        format!("Array '{}' is not defined", base),
+                    )),
                 }
-                let tmp = this.new_temp();
-                this.emit(Instr::Call {
-                    func: name.clone(),
-                    args: vs,
-                    ret: Some(tmp.clone()),
-                });
-                Value::Var(tmp)
+            }
+
+            Expr::Call { id, name, args } => {
+                // Validate: Check if function exists
+                match this.symbols.lookup_global(name) {
+                    Some(info) if matches!(info.kind, SymbolKind::Function) => {
+                        // Validate: Check argument count
+                        if let Some(expected) = info.param_count {
+                            if args.len() != expected {
+                                return Err(this.make_error(
+                                    SemanticErrorKind::ArgumentCountMismatch,
+                                    *id,
+                                    format!(
+                                        "Function '{}' expects {} argument{}, got {}",
+                                        name,
+                                        expected,
+                                        if expected == 1 { "" } else { "s" },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                        }
+
+                        let mut vs = Vec::new();
+                        for a in args {
+                            vs.push(this.eval_as_value(a)?);
+                        }
+                        let tmp = this.new_temp();
+                        this.emit(Instr::Call {
+                            func: name.clone(),
+                            args: vs,
+                            ret: Some(tmp.clone()),
+                        });
+                        Ok(Value::Var(tmp))
+                    }
+                    Some(_info) => Err(this.make_error(
+                        SemanticErrorKind::ArrayUsedAsFunction,
+                        *id,
+                        format!("Array '{}' used as function", name),
+                    )),
+                    None => Err(this.make_error(
+                        SemanticErrorKind::UndefinedFunction,
+                        *id,
+                        format!("Function '{}' is not defined", name),
+                    )),
+                }
             }
         })
     }
 
-    pub fn eval_as_pointer_expr(&mut self, e: &Expr) -> Value {
+    pub fn eval_as_pointer_expr(&mut self, e: &Expr) -> Result<Value, CompileError> {
         match e {
-            Expr::Variable(_, name) => Value::AddrOf(name.clone()),
-            Expr::AddrOf(_, name) => Value::AddrOf(name.clone()),
+            Expr::Variable(_, name) => Ok(Value::AddrOf(name.clone())),
+            Expr::AddrOf(_, name) => Ok(Value::AddrOf(name.clone())),
             _ => self.eval_as_value(e), // fallback (e.g., complex pointer arithmetic)
         }
     }

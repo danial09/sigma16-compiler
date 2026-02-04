@@ -39,7 +39,7 @@ pub enum Token {
     #[regex(r"[A-Za-z_][A-Za-z0-9_]*", |lex| lex.slice().to_string())]
     Ident(String),
 
-    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
+    #[regex(r"-?[0-9]+", |lex| lex.slice().parse().ok())]
     Number(i64),
 
     // --- Operators ---
@@ -87,6 +87,12 @@ pub enum Token {
     Amp,
     #[token(";")]
     Semicolon,
+
+    #[regex(r#""[^"]*""#, |lex| {
+        let s = lex.slice();
+        s[1..s.len()-1].to_string()
+    })]
+    String(String),
 }
 
 /// Custom error type for lexical errors

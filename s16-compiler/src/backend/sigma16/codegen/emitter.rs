@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use crate::ir::Value;
+use crate::ir::{Value, Var};
 use super::super::regalloc::{RegAllocator, GreedyRegAllocator};
 use super::super::abi::Register;
 use super::item::AsmItem;
@@ -7,13 +7,14 @@ use super::item::AsmItem;
 pub struct Codegen {
     pub out: Vec<AsmItem>,
     pub reg: Box<dyn RegAllocator>,
-    pub user_vars: Vec<(String, i64)>, // name, initial value
+    pub user_vars: Vec<(String, i64, Option<usize>)>, // name, initial value, ir_map
     pub user_vars_set: HashSet<String>,
-    pub arrays: Vec<(String, usize, Option<Vec<i64>>)>,
+    pub arrays: Vec<(String, usize, Option<Vec<i64>>, Option<usize>)>, // name, size, values, ir_map
     pub emitted_header: bool,
     pub top_level_buf: Option<Vec<AsmItem>>,
     pub func_buf: Option<Vec<AsmItem>>,
     pub current_func_name: Option<String>,
+    pub current_func_ir: Option<usize>,
     pub current_ir: Option<usize>,
 }
 
@@ -34,6 +35,7 @@ impl Codegen {
             top_level_buf: None,
             func_buf: None,
             current_func_name: None,
+            current_func_ir: None,
             current_ir: None,
         }
     }
@@ -41,14 +43,14 @@ impl Codegen {
     pub fn note_user_var(&mut self, name: &str) {
         if !self.user_vars_set.contains(name) {
             self.user_vars_set.insert(name.to_string());
-            self.user_vars.push((name.to_string(), 0));
+            self.user_vars.push((name.to_string(), 0, self.current_ir));
         }
     }
 
     pub fn note_user_var_init(&mut self, name: &str, init: i64) {
         if !self.user_vars_set.contains(name) {
             self.user_vars_set.insert(name.to_string());
-            self.user_vars.push((name.to_string(), init));
+            self.user_vars.push((name.to_string(), init, self.current_ir));
         }
     }
 
@@ -56,10 +58,10 @@ impl Codegen {
         let line = s.into();
         let map = self.current_ir;
         let item = if line.ends_with(':') && !line.starts_with(' ') {
-            AsmItem::Label(line[..line.len() - 1].to_string())
+            AsmItem::Label(line[..line.len() - 1].to_string(), map)
         } else {
             AsmItem::Instruction {
-                text: line,
+                text: line.clone(),
                 ir_map: map,
             }
         };
@@ -70,7 +72,8 @@ impl Codegen {
             buf.push(item);
         } else {
             self.top_level_buf = Some(Vec::new());
-            self.reg.begin_region();
+            // Don't call begin_region() here - it clears variable bindings that were just made!
+            // begin_region() should only be called at function/region boundaries.
             self.top_level_buf.as_mut().unwrap().push(item);
         }
     }
@@ -79,6 +82,7 @@ impl Codegen {
         self.flush_top_level();
         self.func_buf = Some(Vec::new());
         self.current_func_name = Some(name);
+        self.current_func_ir = self.current_ir;
         self.reg.begin_region();
     }
 
@@ -86,11 +90,11 @@ impl Codegen {
         if let Some(body) = self.top_level_buf.take() {
             let max_slots = self.reg.get_max_slots();
             if !self.out.iter().any(|item| item.as_label() == Some("__prog_start")) {
-                self.out.push(AsmItem::Label("__prog_start".to_string()));
+                self.out.push(AsmItem::Label("__prog_start".to_string(), None));
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {}, -{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!("  lea {},{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
                     ir_map: None,
                 });
             }
@@ -99,7 +103,7 @@ impl Codegen {
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {}, {}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!("  lea {},-{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
                     ir_map: None,
                 });
             }
@@ -143,43 +147,59 @@ impl Codegen {
         let mut prologue = Vec::new();
         let mut epilogue = Vec::new();
 
-        // Save return address
+        // Sigma16 stack grows UPWARD
+        // Stack layout when function is active:
+        // [old_R14+0]: Return address (R13)
+        // [old_R14+1]: First local/spill slot
+        // [old_R14+2]: Second local/spill slot
+        // ...
+        // [old_R14+max_slots]: Last local/spill slot
+        // [old_R14+max_slots+1]: First callee-saved register
+        // ...
+        // [old_R14+total_frame-1]: Last callee-saved register
+        // [old_R14+total_frame]: <-- new R14 points here
+
+        // Save return address at current stack pointer
         prologue.push(AsmItem::Instruction {
-            text: format!("  store {}, -1[{}]", Register::LINK_REG, Register::STACK_PTR),
+            text: format!("  store {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
             ir_map: None,
         });
 
-        // Adjust stack for local variables, callee-saved regs, and R14
+        // Adjust stack pointer upward for return address, local variables, and callee-saved regs
         let total_frame = frame + 1;
         prologue.push(AsmItem::Instruction {
-            text: format!("  lea {}, -{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!("  lea {},{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
             ir_map: None,
         });
 
         // Save callee-saved registers
+        // They are stored relative to the NEW stack pointer (looking backward)
         for (i, &reg) in used_callee.iter().enumerate() {
-            let disp = max_slots + i; // 0-based index within the extra frame part
+            let disp = -(1 + saved_count as i32) + i as i32;
             prologue.push(AsmItem::Instruction {
-                text: format!("  store {}, {}[{}]", reg, disp, Register::STACK_PTR),
+                text: format!("  store {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
             });
         }
 
         // Restore callee-saved registers
         for (i, &reg) in used_callee.iter().enumerate().rev() {
-            let disp = max_slots + i;
+            let disp = -(1 + saved_count as i32) + i as i32;
             epilogue.push(AsmItem::Instruction {
-                text: format!("  load {}, {}[{}]", reg, disp, Register::STACK_PTR),
+                text: format!("  load {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
             });
         }
 
+        // Move stack pointer back down
         epilogue.push(AsmItem::Instruction {
-            text: format!("  lea {}, {}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!("  lea {},-{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
             ir_map: None,
         });
+
+        // Restore return address
         epilogue.push(AsmItem::Instruction {
-            text: format!("  load {}, -1[{}]", Register::LINK_REG, Register::STACK_PTR),
+            text: format!("  load {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
             ir_map: None,
         });
 
@@ -190,6 +210,7 @@ impl Codegen {
 
         self.out.push(AsmItem::Function {
             name,
+            ir_map: self.current_func_ir,
             prologue,
             body,
             epilogue,
@@ -223,6 +244,23 @@ impl Codegen {
         r
     }
 
+    pub fn ensure_var_in_reg(&mut self, var: &Var, prefer_reg: Option<Register>) -> Register {
+        let mut out = Vec::new();
+        let mut noted = Vec::new();
+        let r = self.reg.ensure_var_in_reg(var, &mut out, &mut |name| noted.push(name.to_string()), prefer_reg);
+        for line in out {
+            self.emit(line);
+        }
+        for name in noted {
+            self.note_user_var(&name);
+        }
+        r
+    }
+
+    pub fn get_var_reg(&self, var: &Var) -> Option<Register> {
+        self.reg.get_var_reg(var)
+    }
+
     pub fn finish_codegen(mut self) -> super::Sigma16Asm {
         let mut out = Vec::new();
         self.reg.flush_all(&mut out);
@@ -235,24 +273,30 @@ impl Codegen {
             self.flush_function();
         }
 
+        // trap instruction to terminate program
+        self.out.push(AsmItem::Instruction {
+            text: "  trap R0,R0,R0".to_string(),
+            ir_map: None,
+        });
+
         self.out.push(AsmItem::Instruction {
             text: String::new(),
             ir_map: None,
         });
 
-        for (name, init) in &self.user_vars {
+        for (name, init, ir_map) in &self.user_vars {
             self.out.push(AsmItem::Instruction {
                 text: format!("{:<8} data   {}", name, init),
-                ir_map: None,
+                ir_map: *ir_map,
             });
         }
-        for (name, len, initial_values) in &self.arrays {
-            self.out.push(AsmItem::Label(name.clone()));
+        for (name, len, initial_values, ir_map) in &self.arrays {
+            self.out.push(AsmItem::Label(name.clone(), *ir_map));
             for i in 0..*len {
                 let val = initial_values.as_ref().and_then(|v| v.get(i)).cloned().unwrap_or(0);
                 self.out.push(AsmItem::Instruction {
                     text: format!("     data   {}", val),
-                    ir_map: None,
+                    ir_map: *ir_map,
                 });
             }
         }
@@ -261,7 +305,7 @@ impl Codegen {
             ir_map: None,
         });
 
-        // Run optimizations
+        // Run optimisations
         super::super::opt::optimize(&mut self.out);
 
         let mut lines = Vec::new();
@@ -277,9 +321,9 @@ impl Codegen {
     fn flatten_items(items: &[AsmItem], lines: &mut Vec<String>, mapping: &mut Vec<Option<usize>>) {
         for item in items {
             match item {
-                AsmItem::Label(name) => {
+                AsmItem::Label(name, ir_map) => {
                     lines.push(name.clone());
-                    mapping.push(None);
+                    mapping.push(*ir_map);
                 }
                 AsmItem::Instruction { text, ir_map } => {
                     lines.push(text.clone());
@@ -287,13 +331,14 @@ impl Codegen {
                 }
                 AsmItem::Function {
                     name,
+                    ir_map,
                     prologue,
                     body,
                     epilogue,
                     ..
                 } => {
                     lines.push(name.clone());
-                    mapping.push(None);
+                    mapping.push(*ir_map);
                     Self::flatten_items(prologue, lines, mapping);
                     Self::flatten_items(body, lines, mapping);
                     Self::flatten_items(epilogue, lines, mapping);

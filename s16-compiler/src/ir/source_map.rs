@@ -182,6 +182,11 @@ impl SourceMap {
         }
         best_with_ir.or(best_any).map(|(_, info)| info)
     }
+
+    /// Access the source index for line/col conversion
+    pub fn source_index_ref(&self) -> Option<&SourceIndex> {
+        self.source_index.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
