@@ -149,15 +149,15 @@ impl Codegen {
 
         // Sigma16 stack grows UPWARD
         // Stack layout when function is active:
-        // [old_R13+0]: Return address (R14)
-        // [old_R13+1]: First local/spill slot
-        // [old_R13+2]: Second local/spill slot
+        // [old_R14+0]: Return address (R13)
+        // [old_R14+1]: First local/spill slot
+        // [old_R14+2]: Second local/spill slot
         // ...
-        // [old_R13+max_slots]: Last local/spill slot
-        // [old_R13+max_slots+1]: First callee-saved register
+        // [old_R14+max_slots]: Last local/spill slot
+        // [old_R14+max_slots+1]: First callee-saved register
         // ...
-        // [old_R13+total_frame-1]: Last callee-saved register
-        // [old_R13+total_frame]: <-- new R13 points here
+        // [old_R14+total_frame-1]: Last callee-saved register
+        // [old_R14+total_frame]: <-- new R14 points here
 
         // Save return address at current stack pointer
         prologue.push(AsmItem::Instruction {
@@ -305,7 +305,7 @@ impl Codegen {
             ir_map: None,
         });
 
-        // Run optimizations
+        // Run optimisations
         super::super::opt::optimize(&mut self.out);
 
         let mut lines = Vec::new();
@@ -322,7 +322,6 @@ impl Codegen {
         for item in items {
             match item {
                 AsmItem::Label(name, ir_map) => {
-                    // Sigma16 labels should NOT have colons
                     lines.push(name.clone());
                     mapping.push(*ir_map);
                 }
@@ -338,7 +337,6 @@ impl Codegen {
                     epilogue,
                     ..
                 } => {
-                    // Sigma16 labels should NOT have colons
                     lines.push(name.clone());
                     mapping.push(*ir_map);
                     Self::flatten_items(prologue, lines, mapping);

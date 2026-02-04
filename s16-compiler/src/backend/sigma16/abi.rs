@@ -28,8 +28,8 @@ impl Register {
         Register::R5, Register::R6, Register::R7, Register::R8,
     ];
 
-    pub const STACK_PTR: Register = Register::R13;
-    pub const LINK_REG: Register = Register::R14;
+    pub const STACK_PTR: Register = Register::R14;
+    pub const LINK_REG: Register = Register::R13;
     pub const ZERO_REG: Register = Register::R0;
 
     pub fn from_str(s: &str) -> Option<Self> {
