@@ -62,7 +62,7 @@ impl Codegen {
                 ir_map: None,
             });
             self.out.push(AsmItem::Instruction {
-                text: "  jump __prog_start".to_string(),
+                text: "  jump prog_start".to_string(),
                 ir_map: None,
             });
             self.emitted_header = true;

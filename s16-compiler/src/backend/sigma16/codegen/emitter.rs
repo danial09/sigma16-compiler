@@ -89,8 +89,8 @@ impl Codegen {
     pub fn flush_top_level(&mut self) {
         if let Some(body) = self.top_level_buf.take() {
             let max_slots = self.reg.get_max_slots();
-            if !self.out.iter().any(|item| item.as_label() == Some("__prog_start")) {
-                self.out.push(AsmItem::Label("__prog_start".to_string(), None));
+            if !self.out.iter().any(|item| item.as_label() == Some("prog_start")) {
+                self.out.push(AsmItem::Label("prog_start".to_string(), None));
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
