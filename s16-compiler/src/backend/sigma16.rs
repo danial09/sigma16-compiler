@@ -11,6 +11,7 @@ mod abi;
 mod regalloc;
 mod codegen;
 mod opt;
+mod liveness;
 
 pub use codegen::{
     compile_ir_to_sigma16,

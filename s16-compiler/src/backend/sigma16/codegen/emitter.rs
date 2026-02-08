@@ -1,8 +1,8 @@
-use std::collections::HashSet;
-use crate::ir::{Value, Var};
-use super::super::regalloc::{RegAllocator, GreedyRegAllocator};
 use super::super::abi::Register;
+use super::super::regalloc::{GreedyRegAllocator, RegAllocator};
 use super::item::AsmItem;
+use crate::ir::{Value, Var};
+use std::collections::HashSet;
 
 pub struct Codegen {
     pub out: Vec<AsmItem>,
@@ -16,15 +16,16 @@ pub struct Codegen {
     pub current_func_name: Option<String>,
     pub current_func_ir: Option<usize>,
     pub current_ir: Option<usize>,
+    pub advanced_mode: bool,
 }
 
 impl Codegen {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::with_regalloc(Box::new(GreedyRegAllocator::new()))
+        Self::with_regalloc(Box::new(GreedyRegAllocator::new()), false)
     }
 
-    pub fn with_regalloc(reg: Box<dyn RegAllocator>) -> Self {
+    pub fn with_regalloc(reg: Box<dyn RegAllocator>, advanced_mode: bool) -> Self {
         Self {
             out: Vec::new(),
             reg,
@@ -37,6 +38,7 @@ impl Codegen {
             current_func_name: None,
             current_func_ir: None,
             current_ir: None,
+            advanced_mode,
         }
     }
 
@@ -50,7 +52,8 @@ impl Codegen {
     pub fn note_user_var_init(&mut self, name: &str, init: i64) {
         if !self.user_vars_set.contains(name) {
             self.user_vars_set.insert(name.to_string());
-            self.user_vars.push((name.to_string(), init, self.current_ir));
+            self.user_vars
+                .push((name.to_string(), init, self.current_ir));
         }
     }
 
@@ -79,6 +82,13 @@ impl Codegen {
     }
 
     pub fn start_function(&mut self, name: String) {
+        // Flush dirty globals to memory before the region ends,
+        // otherwise begin_region() will discard them.
+        let mut flush_out = Vec::new();
+        self.reg.flush_dirty(&mut flush_out);
+        for l in flush_out {
+            self.emit(l);
+        }
         self.flush_top_level();
         self.func_buf = Some(Vec::new());
         self.current_func_name = Some(name);
@@ -89,12 +99,22 @@ impl Codegen {
     pub fn flush_top_level(&mut self) {
         if let Some(body) = self.top_level_buf.take() {
             let max_slots = self.reg.get_max_slots();
-            if !self.out.iter().any(|item| item.as_label() == Some("prog_start")) {
-                self.out.push(AsmItem::Label("prog_start".to_string(), None));
+            if !self
+                .out
+                .iter()
+                .any(|item| item.as_label() == Some("prog_start"))
+            {
+                self.out
+                    .push(AsmItem::Label("prog_start".to_string(), None));
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {},{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!(
+                        "  lea {},{}[{}]",
+                        Register::STACK_PTR,
+                        max_slots,
+                        Register::STACK_PTR
+                    ),
                     ir_map: None,
                 });
             }
@@ -103,7 +123,12 @@ impl Codegen {
             }
             if max_slots > 0 {
                 self.out.push(AsmItem::Instruction {
-                    text: format!("  lea {},-{}[{}]", Register::STACK_PTR, max_slots, Register::STACK_PTR),
+                    text: format!(
+                        "  lea {},-{}[{}]",
+                        Register::STACK_PTR,
+                        max_slots,
+                        Register::STACK_PTR
+                    ),
                     ir_map: None,
                 });
             }
@@ -137,7 +162,10 @@ impl Codegen {
 
     pub fn flush_function(&mut self) {
         let body = self.func_buf.take().unwrap_or_default();
-        let name = self.current_func_name.take().unwrap_or("__anon".to_string());
+        let name = self
+            .current_func_name
+            .take()
+            .unwrap_or("__anon".to_string());
         let max_slots = self.reg.get_max_slots();
         let used_callee = self.detect_used_callee_saved(&body);
         let saved_count = used_callee.len();
@@ -168,7 +196,12 @@ impl Codegen {
         // Adjust stack pointer upward for return address, local variables, and callee-saved regs
         let total_frame = frame + 1;
         prologue.push(AsmItem::Instruction {
-            text: format!("  lea {},{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!(
+                "  lea {},{}[{}]",
+                Register::STACK_PTR,
+                total_frame,
+                Register::STACK_PTR
+            ),
             ir_map: None,
         });
 
@@ -193,7 +226,12 @@ impl Codegen {
 
         // Move stack pointer back down
         epilogue.push(AsmItem::Instruction {
-            text: format!("  lea {},-{}[{}]", Register::STACK_PTR, total_frame, Register::STACK_PTR),
+            text: format!(
+                "  lea {},-{}[{}]",
+                Register::STACK_PTR,
+                total_frame,
+                Register::STACK_PTR
+            ),
             ir_map: None,
         });
 
@@ -225,7 +263,9 @@ impl Codegen {
     pub fn ensure_in_reg(&mut self, v: &Value) -> (Register, bool) {
         let mut tmp_out = Vec::new();
         let mut noted = Vec::new();
-        let res = self.reg.ensure_in_reg(v, &mut tmp_out, &mut |name| noted.push(name.to_string()));
+        let res = self
+            .reg
+            .ensure_in_reg(v, &mut tmp_out, &mut |name| noted.push(name.to_string()));
         for line in tmp_out {
             self.emit(line);
         }
@@ -244,10 +284,16 @@ impl Codegen {
         r
     }
 
-    pub fn ensure_var_in_reg(&mut self, var: &Var, prefer_reg: Option<Register>) -> Register {
+    pub fn get_var_reg(&self, var: &Var) -> Option<Register> {
+        self.reg.get_var_reg(var)
+    }
+
+    pub fn prepare_def_reg(&mut self, var: &Var) -> Register {
         let mut out = Vec::new();
         let mut noted = Vec::new();
-        let r = self.reg.ensure_var_in_reg(var, &mut out, &mut |name| noted.push(name.to_string()), prefer_reg);
+        let r = self
+            .reg
+            .prepare_def_reg(var, &mut out, &mut |name| noted.push(name.to_string()));
         for line in out {
             self.emit(line);
         }
@@ -255,10 +301,6 @@ impl Codegen {
             self.note_user_var(&name);
         }
         r
-    }
-
-    pub fn get_var_reg(&self, var: &Var) -> Option<Register> {
-        self.reg.get_var_reg(var)
     }
 
     pub fn finish_codegen(mut self) -> super::Sigma16Asm {
@@ -284,7 +326,18 @@ impl Codegen {
             ir_map: None,
         });
 
+        // Collect array names to avoid emitting them twice (once as user_var, once as array)
+        let array_names: std::collections::HashSet<&str> = self
+            .arrays
+            .iter()
+            .map(|(name, _, _, _)| name.as_str())
+            .collect();
+
         for (name, init, ir_map) in &self.user_vars {
+            // Skip if this variable will be emitted as an array
+            if array_names.contains(name.as_str()) {
+                continue;
+            }
             self.out.push(AsmItem::Instruction {
                 text: format!("{:<8} data   {}", name, init),
                 ir_map: *ir_map,
@@ -293,7 +346,11 @@ impl Codegen {
         for (name, len, initial_values, ir_map) in &self.arrays {
             self.out.push(AsmItem::Label(name.clone(), *ir_map));
             for i in 0..*len {
-                let val = initial_values.as_ref().and_then(|v| v.get(i)).cloned().unwrap_or(0);
+                let val = initial_values
+                    .as_ref()
+                    .and_then(|v| v.get(i))
+                    .cloned()
+                    .unwrap_or(0);
                 self.out.push(AsmItem::Instruction {
                     text: format!("     data   {}", val),
                     ir_map: *ir_map,
