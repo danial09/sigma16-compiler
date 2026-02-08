@@ -1,6 +1,6 @@
+use crate::CompileError;
 use crate::frontend::{grammar, lexer};
 use crate::ir::{AstNodeId, AstNodeKind};
-use crate::CompileError;
 
 #[derive(Debug, Clone)]
 pub struct Program {
@@ -48,15 +48,9 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     /// Return from function (single return value)
-    Return {
-        id: AstNodeId,
-        value: Expr,
-    },
+    Return { id: AstNodeId, value: Expr },
     /// Expression used as a statement (e.g., a call with ignored result)
-    ExprStmt {
-        id: AstNodeId,
-        expr: Expr,
-    },
+    ExprStmt { id: AstNodeId, expr: Expr },
     /// String declaration: name = "abc";
     StringDecl {
         id: AstNodeId,
@@ -86,7 +80,11 @@ pub enum Expr {
     Number(AstNodeId, i64),
     Variable(AstNodeId, String),
     /// Function call: name(args)
-    Call { id: AstNodeId, name: String, args: Vec<Expr> },
+    Call {
+        id: AstNodeId,
+        name: String,
+        args: Vec<Expr>,
+    },
     Binary {
         id: AstNodeId,
         op: BinOp,
@@ -103,7 +101,11 @@ pub enum Expr {
     /// Dereference of a pointer expression: *p
     Deref(AstNodeId, Box<Expr>),
     /// Array or pointer indexing: a[i]
-    Index { id: AstNodeId, base: String, index: Box<Expr> },
+    Index {
+        id: AstNodeId,
+        base: String,
+        index: Box<Expr>,
+    },
 }
 
 impl Expr {
@@ -127,6 +129,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Eq,
     Neq,
     Lt,
@@ -184,11 +187,20 @@ pub struct SpanCollector {
 }
 
 impl SpanCollector {
-    pub fn new() -> Self { Self { spans: Vec::new() } }
-    pub fn add(&mut self, id: AstNodeId, start: usize, end: usize, kind: AstNodeKind) {
-        self.spans.push(AstSpanRecord { id, start, end, kind });
+    pub fn new() -> Self {
+        Self { spans: Vec::new() }
     }
-    pub fn into_vec(self) -> Vec<AstSpanRecord> { self.spans }
+    pub fn add(&mut self, id: AstNodeId, start: usize, end: usize, kind: AstNodeKind) {
+        self.spans.push(AstSpanRecord {
+            id,
+            start,
+            end,
+            kind,
+        });
+    }
+    pub fn into_vec(self) -> Vec<AstSpanRecord> {
+        self.spans
+    }
 }
 
 /// Parsed AST along with span information for each node
@@ -199,55 +211,55 @@ pub struct ParsedAst {
 
 pub fn parse_to_ast(source: &str) -> Result<ParsedAst, CompileError> {
     use std::cell::RefCell;
-    
+
     let lexer = lexer::lex_adapter(source);
     let id_gen = RefCell::new(AstNodeIdGenerator::new());
     let spans = RefCell::new(SpanCollector::new());
-    
+
     let program = grammar::ProgramParser::new()
         .parse(&id_gen, &spans, lexer)
         .map_err(|e| {
             use lalrpop_util::ParseError;
 
             match e {
-                ParseError::InvalidToken { location } => {
-                    CompileError::Parse {
-                        location,
-                        message: "Invalid token".to_string(),
-                    }
-                }
-                ParseError::UnrecognizedEof { location, expected } => {
-                    CompileError::Parse {
-                        location,
-                        message: format!(
-                            "Unexpected end of file. Expected one of: {}",
-                            expected.join(", ")
-                        ),
-                    }
-                }
-                ParseError::UnrecognizedToken { token: (start, tok, end), expected } => {
-                    CompileError::Parse {
-                        location: start,
-                        message: format!(
-                            "Unexpected token '{:?}' at position {}..{}. Expected one of: {}",
-                            tok,
-                            start,
-                            end,
-                            expected.join(", ")
-                        ),
-                    }
-                }
-                ParseError::ExtraToken { token: (start, tok, end) } => {
-                    CompileError::Parse {
-                        location: start,
-                        message: format!("Extra token '{:?}' at position {}..{}", tok, start, end),
-                    }
-                }
+                ParseError::InvalidToken { location } => CompileError::Parse {
+                    location,
+                    message: "Invalid token".to_string(),
+                },
+                ParseError::UnrecognizedEof { location, expected } => CompileError::Parse {
+                    location,
+                    message: format!(
+                        "Unexpected end of file. Expected one of: {}",
+                        expected.join(", ")
+                    ),
+                },
+                ParseError::UnrecognizedToken {
+                    token: (start, tok, end),
+                    expected,
+                } => CompileError::Parse {
+                    location: start,
+                    message: format!(
+                        "Unexpected token '{:?}' at position {}..{}. Expected one of: {}",
+                        tok,
+                        start,
+                        end,
+                        expected.join(", ")
+                    ),
+                },
+                ParseError::ExtraToken {
+                    token: (start, tok, end),
+                } => CompileError::Parse {
+                    location: start,
+                    message: format!("Extra token '{:?}' at position {}..{}", tok, start, end),
+                },
                 ParseError::User { error } => {
                     CompileError::ParseGeneric(format!("Lexical error: {}", error))
                 }
             }
         })?;
 
-    Ok(ParsedAst { program, spans: spans.into_inner().into_vec() })
+    Ok(ParsedAst {
+        program,
+        spans: spans.into_inner().into_vec(),
+    })
 }

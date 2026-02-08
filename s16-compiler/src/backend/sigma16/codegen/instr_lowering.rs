@@ -174,11 +174,12 @@ impl Codegen {
                     }
                 }
                 Rhs::Binary { op, left, right } => {
+                    let is_mod = *op == ArithOp::Mod;
                     let op_str = match op {
                         ArithOp::Add => "add",
                         ArithOp::Sub => "sub",
                         ArithOp::Mul => "mul",
-                        ArithOp::Div => "div",
+                        ArithOp::Div | ArithOp::Mod => "div",
                     };
 
                     if dst.kind == VarKind::Global {
@@ -189,7 +190,14 @@ impl Codegen {
                     let dst_is_left = matches!(left, Value::Var(v) if v == dst);
                     let dst_is_right = matches!(right, Value::Var(v) if v == dst);
 
-                    let (rl, free_l, rr, free_r, rd) = if dst_is_left {
+                    let (rl, free_l, rr, free_r, rd) = if is_mod {
+                        // For modulo, the div result is discarded; remainder lands in R15.
+                        // We must not clobber an operand register with the div destination.
+                        let (rl, free_l) = self.ensure_in_reg(left);
+                        let (rr, free_r) = self.ensure_in_reg(right);
+                        let rd = self.prepare_def_reg(dst);
+                        (rl, free_l, rr, free_r, rd)
+                    } else if dst_is_left {
                         let (rl, free_l) = self.ensure_in_reg(left);
                         let (rr, free_r) = self.ensure_in_reg(right);
                         (rl, free_l, rr, free_r, rl)
@@ -212,7 +220,14 @@ impl Codegen {
                         (rl, free_l, rr, free_r, rd)
                     };
 
-                    self.emit(format!("  {op_str} {rd},{rl},{rr}"));
+                    if is_mod {
+                        // div R0,rl,rr  — quotient discarded into R0, remainder in R15
+                        self.emit(format!("  div {},{},{}", Register::ZERO_REG, rl, rr));
+                        // move remainder from R15 into the destination register
+                        self.emit(format!("  add {},{},R15", rd, Register::ZERO_REG));
+                    } else {
+                        self.emit(format!("  {op_str} {rd},{rl},{rr}"));
+                    }
 
                     self.reg.bind_var_to_reg(dst.clone(), rd);
                     self.reg.mark_dirty(dst);

@@ -11,6 +11,7 @@ pub struct Codegen {
     pub user_vars_set: HashSet<String>,
     pub arrays: Vec<(String, usize, Option<Vec<i64>>, Option<usize>)>, // name, size, values, ir_map
     pub emitted_header: bool,
+    pub has_top_level_code: bool,
     pub top_level_buf: Option<Vec<AsmItem>>,
     pub func_buf: Option<Vec<AsmItem>>,
     pub current_func_name: Option<String>,
@@ -33,6 +34,7 @@ impl Codegen {
             user_vars_set: HashSet::new(),
             arrays: Vec::new(),
             emitted_header: false,
+            has_top_level_code: false,
             top_level_buf: None,
             func_buf: None,
             current_func_name: None,
@@ -99,6 +101,29 @@ impl Codegen {
     pub fn flush_top_level(&mut self) {
         if let Some(body) = self.top_level_buf.take() {
             let max_slots = self.reg.get_max_slots();
+            // Emit the program header (stack setup + jump) on the first
+            // flush that actually contains top-level instructions.
+            if !self.has_top_level_code {
+                self.has_top_level_code = true;
+                self.out.insert(
+                    0,
+                    AsmItem::Instruction {
+                        text: format!(
+                            "  lea {},stack[{}]",
+                            Register::STACK_PTR,
+                            Register::ZERO_REG
+                        ),
+                        ir_map: None,
+                    },
+                );
+                self.out.insert(
+                    1,
+                    AsmItem::Instruction {
+                        text: "  jump prog_start".to_string(),
+                        ir_map: None,
+                    },
+                );
+            }
             if !self
                 .out
                 .iter()
@@ -315,11 +340,13 @@ impl Codegen {
             self.flush_function();
         }
 
-        // trap instruction to terminate program
-        self.out.push(AsmItem::Instruction {
-            text: "  trap R0,R0,R0".to_string(),
-            ir_map: None,
-        });
+        // trap instruction to terminate program (only if there is top-level code)
+        if self.has_top_level_code {
+            self.out.push(AsmItem::Instruction {
+                text: "  trap R0,R0,R0".to_string(),
+                ir_map: None,
+            });
+        }
 
         self.out.push(AsmItem::Instruction {
             text: String::new(),
@@ -357,10 +384,12 @@ impl Codegen {
                 });
             }
         }
-        self.out.push(AsmItem::Instruction {
-            text: "stack    data   0".to_string(),
-            ir_map: None,
-        });
+        if self.has_top_level_code {
+            self.out.push(AsmItem::Instruction {
+                text: "stack    data   0".to_string(),
+                ir_map: None,
+            });
+        }
 
         // Run optimisations
         super::super::opt::optimize(&mut self.out);

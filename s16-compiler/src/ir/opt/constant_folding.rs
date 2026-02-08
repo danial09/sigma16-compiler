@@ -14,6 +14,7 @@ impl IrPass for ConstantFolder {
                         ArithOp::Sub => Some(l_val - r_val),
                         ArithOp::Mul => Some(l_val * r_val),
                         ArithOp::Div if r_val != 0 => Some(l_val / r_val),
+                        ArithOp::Mod if r_val != 0 => Some(l_val % r_val),
                         _ => None,
                     };
                     if let Some(val) = result {

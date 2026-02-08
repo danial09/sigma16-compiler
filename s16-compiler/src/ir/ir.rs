@@ -25,7 +25,12 @@ impl ProgramIR {
             match ins {
                 Instr::Label(lbl) => out.push(format!("{lbl}:")),
                 Instr::Goto(lbl) => out.push(format!("  GOTO {lbl}")),
-                Instr::IfCmpGoto { left, op, right, target } => {
+                Instr::IfCmpGoto {
+                    left,
+                    op,
+                    right,
+                    target,
+                } => {
                     out.push(format!("  if {} {} {} GOTO {target}", left, op, right));
                 }
                 Instr::Assign { dst, src } => {
@@ -83,9 +88,19 @@ impl ProgramIR {
                         out.push("  RETURN".to_string());
                     }
                 }
-                Instr::ArrayDecl { name, size, initial_values } => {
+                Instr::ArrayDecl {
+                    name,
+                    size,
+                    initial_values,
+                } => {
                     let init_str = if let Some(vals) = initial_values {
-                        format!(" = [{}]", vals.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+                        format!(
+                            " = [{}]",
+                            vals.iter()
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
                     } else {
                         "".to_string()
                     };
@@ -111,13 +126,22 @@ pub struct Var {
 
 impl Var {
     pub fn temp(name: String) -> Self {
-        Self { name, kind: VarKind::Temp }
+        Self {
+            name,
+            kind: VarKind::Temp,
+        }
     }
     pub fn local(name: String) -> Self {
-        Self { name, kind: VarKind::Local }
+        Self {
+            name,
+            kind: VarKind::Local,
+        }
     }
     pub fn global(name: String) -> Self {
-        Self { name, kind: VarKind::Global }
+        Self {
+            name,
+            kind: VarKind::Global,
+        }
     }
 
     pub fn is_temp(&self) -> bool {
@@ -146,24 +170,65 @@ impl std::fmt::Display for Var {
 
 #[derive(Debug, Clone)]
 pub enum Instr {
-    Assign { dst: Var, src: Rhs },
-    Load { dst: Var, addr: Value },
-    Store { addr: Value, src: Value },
-    ArrayLoad { dst: Var, base: String, index: Value },
-    ArrayStore { base: String, index: Value, src: Value },
-    IfCmpGoto { left: Value, op: RelOp, right: Value, target: String },
+    Assign {
+        dst: Var,
+        src: Rhs,
+    },
+    Load {
+        dst: Var,
+        addr: Value,
+    },
+    Store {
+        addr: Value,
+        src: Value,
+    },
+    ArrayLoad {
+        dst: Var,
+        base: String,
+        index: Value,
+    },
+    ArrayStore {
+        base: String,
+        index: Value,
+        src: Value,
+    },
+    IfCmpGoto {
+        left: Value,
+        op: RelOp,
+        right: Value,
+        target: String,
+    },
     Goto(String),
     Label(String),
-    FuncStart { name: String, params: Vec<String> },
-    FuncEnd { name: String },
-    Call { func: String, args: Vec<Value>, ret: Option<Var> },
-    Return { value: Option<Value> },
-    ArrayDecl { name: String, size: usize, initial_values: Option<Vec<i64>> },
+    FuncStart {
+        name: String,
+        params: Vec<String>,
+    },
+    FuncEnd {
+        name: String,
+    },
+    Call {
+        func: String,
+        args: Vec<Value>,
+        ret: Option<Var>,
+    },
+    Return {
+        value: Option<Value>,
+    },
+    ArrayDecl {
+        name: String,
+        size: usize,
+        initial_values: Option<Vec<i64>>,
+    },
 }
 #[derive(Debug, Clone)]
 pub enum Rhs {
     Value(Value),
-    Binary { op: ArithOp, left: Value, right: Value },
+    Binary {
+        op: ArithOp,
+        left: Value,
+        right: Value,
+    },
 }
 impl std::fmt::Display for Rhs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -189,29 +254,58 @@ impl std::fmt::Display for Value {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArithOp { Add, Sub, Mul, Div }
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
 impl std::fmt::Display for ArithOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", match self { ArithOp::Add => "+", ArithOp::Sub => "-", ArithOp::Mul => "*", ArithOp::Div => "/" })
+        write!(
+            f,
+            "{}",
+            match self {
+                ArithOp::Add => "+",
+                ArithOp::Sub => "-",
+                ArithOp::Mul => "*",
+                ArithOp::Div => "/",
+                ArithOp::Mod => "%",
+            }
+        )
     }
 }
 struct Values<'a>(&'a [Value]);
 impl<'a> std::fmt::Display for Values<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, v) in self.0.iter().enumerate() {
-            if i > 0 { write!(f, ", ")?; }
+            if i > 0 {
+                write!(f, ", ")?;
+            }
             write!(f, "{}", v)?;
         }
         Ok(())
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelOp { Eq, Neq, Lt, Gt, Le, Ge }
+pub enum RelOp {
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+}
 impl std::fmt::Display for RelOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            RelOp::Eq => "==", RelOp::Neq => "!=", RelOp::Lt => "<", RelOp::Gt => ">",
-            RelOp::Le => "<=", RelOp::Ge => ">=",
+            RelOp::Eq => "==",
+            RelOp::Neq => "!=",
+            RelOp::Lt => "<",
+            RelOp::Gt => ">",
+            RelOp::Le => "<=",
+            RelOp::Ge => ">=",
         };
         write!(f, "{s}")
     }

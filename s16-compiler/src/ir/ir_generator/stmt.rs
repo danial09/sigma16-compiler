@@ -185,7 +185,7 @@ impl Gen {
     pub fn lower_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
         // Prefer direct binary assignment for arithmetic to avoid unnecessary temps
         if let Expr::Binary { left, op, right, .. } = rhs {
-            if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div) {
+            if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod) {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
                 let op = map_arith(*op);

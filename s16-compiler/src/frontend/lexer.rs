@@ -58,6 +58,8 @@ pub enum Token {
     Mul,
     #[token("/")]
     Div,
+    #[token("%")]
+    Mod,
 
     #[token(">")]
     Gt,
