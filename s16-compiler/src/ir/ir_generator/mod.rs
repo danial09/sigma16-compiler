@@ -7,7 +7,7 @@ pub mod context;
 pub mod stmt;
 pub mod expr;
 
-use crate::ast::ast_ir::{Program, AstSpanRecord};
+use crate::ir::ast::{Program, AstSpanRecord};
 use crate::ir::ProgramIR;
 use crate::CompileError;
 

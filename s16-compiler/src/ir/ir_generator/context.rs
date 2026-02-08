@@ -1,6 +1,6 @@
 use crate::ir::*;
 use crate::ir::symbol_table::SymbolTable;
-use crate::ast::ast_ir::AstSpanRecord;
+use crate::ir::ast::AstSpanRecord;
 use crate::{CompileError, SemanticErrorKind};
 
 #[derive(Debug, Clone)]

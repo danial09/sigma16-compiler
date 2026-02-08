@@ -1,4 +1,4 @@
-use crate::ast::ast_ir::{self, BinOp as AstBinOp, Expr, UnOp};
+use crate::ir::ast::{self, BinOp as AstBinOp, Expr, UnOp};
 use crate::ir::*;
 use crate::ir::symbol_table::SymbolKind;
 use crate::{CompileError, SemanticErrorKind};
@@ -145,12 +145,12 @@ impl Gen {
                 }
             }
 
-            Expr::Unary { op: ast_ir::UnOp::Not, .. } => {
+            Expr::Unary { op: ast::UnOp::Not, .. } => {
                 let tmp = this.lower_bool_expr(e)?;
                 Ok(Value::Var(tmp))
             }
 
-            Expr::Unary { op: ast_ir::UnOp::Neg, operand, .. } => {
+            Expr::Unary { op: ast::UnOp::Neg, operand, .. } => {
                 let v = this.eval_as_value(operand)?;
                 let tmp = this.new_temp();
                 this.emit(Instr::Assign {

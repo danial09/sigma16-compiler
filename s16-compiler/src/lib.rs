@@ -1,5 +1,5 @@
 pub mod frontend;
-pub mod ast;
+// pub mod ast;
 pub mod ir;
 pub mod backend;
 
@@ -74,7 +74,7 @@ impl std::fmt::Display for SemanticErrorKind {
 }
 
 pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
-    let parsed = ast::ast_ir::parse_to_ast(source)?;
+    let parsed = ir::ast::parse_to_ast(source)?;
 
     // Lower with semantic validation
     let (mut ir_prog, ast_spans) = ir::ir_generator::lower(&parsed.program, parsed.spans)?;

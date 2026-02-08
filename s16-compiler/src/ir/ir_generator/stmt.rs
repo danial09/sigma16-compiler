@@ -1,4 +1,4 @@
-use crate::ast::ast_ir::{Expr, LValue, Program, Stmt, BinOp as AstBinOp};
+use crate::ir::ast::{Expr, LValue, Program, Stmt, BinOp as AstBinOp};
 use crate::ir::*;
 use crate::ir::symbol_table::{SymbolInfo, SymbolKind};
 use crate::{CompileError, SemanticErrorKind};

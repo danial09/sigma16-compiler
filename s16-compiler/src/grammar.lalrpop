@@ -1,6 +1,6 @@
 // compiler/src/grammar.lalrpop
 
-use crate::ast::ast_ir::*;
+use crate::ir::ast::*;
 use crate::frontend::lexer::{Token, LexicalError};
 use crate::ir::AstNodeKind;
 use std::cell::RefCell;
