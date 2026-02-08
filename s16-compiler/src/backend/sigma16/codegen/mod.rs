@@ -7,12 +7,11 @@ pub mod emitter;
 pub mod instr_lowering;
 pub mod item;
 
+use super::liveness;
+use super::regalloc::{AdvancedRegAllocator, AllocatorKind, GreedyRegAllocator, RegAllocator};
+use crate::ir::{Instr, ProgramIR};
 /// Codegen orchestrates the emission of assembly from IR.
 pub use emitter::Codegen;
-use crate::ir::{Instr, ProgramIR};
-use super::regalloc::{AllocatorKind, AdvancedRegAllocator, GreedyRegAllocator, RegAllocator};
-use super::liveness;
-use super::abi::Register;
 
 #[derive(Debug, Clone)]
 pub struct Sigma16Asm {
@@ -53,8 +52,6 @@ pub fn compile_ir_to_sigma16_with_allocator_mapped(
     cg.finish_codegen()
 }
 
-use item::AsmItem;
-
 /// Find the end of a function starting at `start` in the instruction list.
 fn find_func_end(instrs: &[Instr], start: usize) -> usize {
     let mut j = start + 1;
@@ -83,17 +80,7 @@ fn find_toplevel_end(instrs: &[Instr], start: usize) -> usize {
 impl Codegen {
     pub fn emit_program(&mut self, ir: &ProgramIR) {
         self.arrays = ir.arrays.clone();
-        if !self.emitted_header {
-            self.out.push(AsmItem::Instruction {
-                text: format!("  lea {},stack[{}]", Register::STACK_PTR, Register::ZERO_REG),
-                ir_map: None,
-            });
-            self.out.push(AsmItem::Instruction {
-                text: "  jump prog_start".to_string(),
-                ir_map: None,
-            });
-            self.emitted_header = true;
-        }
+        self.emitted_header = true;
 
         // Initialize register allocation for top-level code
         self.reg.begin_region();
@@ -115,8 +102,7 @@ impl Codegen {
             if let Instr::FuncStart { .. } = instr {
                 if self.advanced_mode {
                     let end = find_func_end(&ir.instrs, ir_index);
-                    let func_liveness =
-                        liveness::compute_liveness(&ir.instrs, ir_index, end);
+                    let func_liveness = liveness::compute_liveness(&ir.instrs, ir_index, end);
                     // Note: start_function() calls begin_region() which clears liveness,
                     // so we set it AFTER emit_instr processes FuncStart.
                     self.emit_instr(instr);

@@ -165,7 +165,7 @@ impl Gen {
             }
 
             Expr::Binary { left, op, right, .. } => {
-                if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div) {
+                if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod) {
                     let lv = this.eval_as_value(left)?;
                     let rv = this.eval_as_value(right)?;
                     let arith_op = map_arith(*op);
@@ -288,6 +288,7 @@ pub fn map_arith(op: AstBinOp) -> ArithOp {
         AstBinOp::Sub => ArithOp::Sub,
         AstBinOp::Mul => ArithOp::Mul,
         AstBinOp::Div => ArithOp::Div,
+        AstBinOp::Mod => ArithOp::Mod,
         _ => unreachable!(),
     }
 }

@@ -34,6 +34,7 @@ extern {
         "Minus"   => Token::Minus,
         "Mul"     => Token::Mul,
         "Div"     => Token::Div,
+        "Mod"     => Token::Mod,
 
         "Eq"      => Token::Eq,     // '=='
         "Neq"     => Token::Neq,    // '!='
@@ -250,6 +251,7 @@ ExprMul: Expr = {
 MulOp: BinOp = {
     "Mul" => BinOp::Mul,
     "Div" => BinOp::Div,
+    "Mod" => BinOp::Mod,
 };
 
 // Unary operators (higher precedence than binary operators)
