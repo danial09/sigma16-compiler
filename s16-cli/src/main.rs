@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use s16_compiler::backend::sigma16::{compile_ir_to_sigma16};
+use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
 use s16_compiler::compile_to_ir;
 use std::fs;
 use std::path::PathBuf;
@@ -35,7 +35,7 @@ struct Args {
 
     /// Register allocation strategy for assembly generation
     /// Options: basic, advanced (default: advanced)
-    #[arg(long, value_enum, default_value_t = AllocOpt::Basic)]
+    #[arg(long, value_enum, default_value_t = AllocOpt::Advanced)]
     alloc: AllocOpt,
 }
 
@@ -97,11 +97,11 @@ fn main() {
 
     // Conditionally build and print assembly
     if want_asm {
-        // let kind = match args.alloc {
-        //     AllocOpt::Basic => AllocatorKind::Basic,
-        //     AllocOpt::Advanced => AllocatorKind::Advanced,
-        // };
-        let asm = compile_ir_to_sigma16(&ir);
+        let kind = match args.alloc {
+            AllocOpt::Basic => AllocatorKind::Basic,
+            AllocOpt::Advanced => AllocatorKind::Advanced,
+        };
+        let asm = compile_ir_to_sigma16_with_allocator(kind, &ir);
         println!("{}", asm);
     }
 }
