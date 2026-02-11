@@ -1,5 +1,6 @@
 use super::super::abi::Register;
 use super::emitter::Codegen;
+use super::item::{Cond, Disp, S16Instr};
 use crate::ir::{ArithOp, Instr, RelOp, Rhs, Value, Var, VarKind};
 
 impl Codegen {
@@ -17,9 +18,7 @@ impl Codegen {
             Instr::FuncEnd { .. } => {
                 let mut out = Vec::new();
                 self.reg.flush_globals(&mut out);
-                for l in out {
-                    self.emit(l);
-                }
+                self.drain_regalloc(out);
                 // Record the IR index for epilogue mapping
                 self.current_func_end_ir = self.current_ir;
                 self.flush_function();
@@ -30,36 +29,28 @@ impl Codegen {
                     // then clear all bindings (merge point: unknown incoming state).
                     let mut out = Vec::new();
                     self.reg.flush_dirty(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                     self.reg.clear_bindings();
                 } else {
                     let mut out = Vec::new();
                     self.reg.flush_all(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                 }
-                self.emit(format!("{}:", lbl));
+                self.push_label(lbl.clone());
             }
             Instr::Goto(t) => {
                 if self.advanced_mode {
                     // Write dirty vars to home locations, then clear bindings.
                     let mut out = Vec::new();
                     self.reg.flush_dirty(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                     self.reg.clear_bindings();
                 } else {
                     let mut out = Vec::new();
                     self.reg.flush_all(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                 }
-                self.emit(format!("  jump {}[{}]", t, Register::ZERO_REG));
+                self.push_asm(S16Instr::jump_label(t.as_str()));
             }
             Instr::IfCmpGoto {
                 left,
@@ -69,7 +60,7 @@ impl Codegen {
             } => {
                 let (rl, free_l) = self.ensure_in_reg(left);
                 let (rr, free_r) = self.ensure_in_reg(right);
-                self.emit(format!("  cmp {rl},{rr}"));
+                self.push_asm(S16Instr::Cmp { a: rl, b: rr });
                 if free_l {
                     self.reg.free_reg(rl);
                 }
@@ -82,26 +73,26 @@ impl Codegen {
                     // but KEEP bindings for the fall-through path.
                     let mut out = Vec::new();
                     self.reg.flush_dirty(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                 } else {
                     let mut out = Vec::new();
                     self.reg.flush_all(&mut out);
-                    for l in out {
-                        self.emit(l);
-                    }
+                    self.drain_regalloc(out);
                 }
 
-                let j = match op {
-                    RelOp::Eq => "jumpeq",
-                    RelOp::Neq => "jumpne",
-                    RelOp::Lt => "jumplt",
-                    RelOp::Gt => "jumpgt",
-                    RelOp::Le => "jumple",
-                    RelOp::Ge => "jumpge",
+                let cond = match op {
+                    RelOp::Eq => Cond::Eq,
+                    RelOp::Neq => Cond::Ne,
+                    RelOp::Lt => Cond::Lt,
+                    RelOp::Gt => Cond::Gt,
+                    RelOp::Le => Cond::Le,
+                    RelOp::Ge => Cond::Ge,
                 };
-                self.emit(format!("  {j} {target}[{}]", Register::ZERO_REG));
+                self.push_asm(S16Instr::JumpCond {
+                    cond,
+                    disp: Disp::Label(target.clone()),
+                    idx: Register::ZERO_REG,
+                });
             }
             Instr::Assign { dst, src } => match src {
                 Rhs::Value(v) => {
@@ -120,12 +111,7 @@ impl Codegen {
                     if dst.kind == VarKind::Global && !self.advanced_mode {
                         // Basic mode: store globals directly to memory
                         self.note_user_var(&dst.name);
-                        self.emit(format!(
-                            "  store {},{}[{}]",
-                            rs,
-                            dst.name,
-                            Register::ZERO_REG
-                        ));
+                        self.push_asm(S16Instr::store_label(rs, &dst.name));
 
                         if let Value::Var(src_var) = v {
                             if src_var.is_reg_allocated() {
@@ -162,12 +148,12 @@ impl Codegen {
                             self.reg.bind_var_to_reg(dst.clone(), rs);
                             self.reg.mark_dirty(dst);
                             // Emit a no-op move to preserve source→IR→ASM mapping
-                            self.emit(format!("  add {rs},{},{}", Register::ZERO_REG, rs));
+                            self.push_asm(S16Instr::mov(rs, rs));
                         } else {
                             // Use prepare_def_reg to avoid loading old value of dst
                             let rd = self.prepare_def_reg(dst);
                             if rd != rs {
-                                self.emit(format!("  add {},{},{}", rd, Register::ZERO_REG, rs));
+                                self.push_asm(S16Instr::mov(rd, rs));
                             }
                             self.reg.bind_var_to_reg(dst.clone(), rd);
                             self.reg.mark_dirty(dst);
@@ -179,12 +165,6 @@ impl Codegen {
                 }
                 Rhs::Binary { op, left, right } => {
                     let is_mod = *op == ArithOp::Mod;
-                    let op_str = match op {
-                        ArithOp::Add => "add",
-                        ArithOp::Sub => "sub",
-                        ArithOp::Mul => "mul",
-                        ArithOp::Div | ArithOp::Mod => "div",
-                    };
 
                     if dst.kind == VarKind::Global {
                         self.note_user_var(&dst.name);
@@ -226,11 +206,42 @@ impl Codegen {
 
                     if is_mod {
                         // div R0,rl,rr  — quotient discarded into R0, remainder in R15
-                        self.emit(format!("  div {},{},{}", Register::ZERO_REG, rl, rr));
+                        self.push_asm(S16Instr::Div {
+                            d: Register::ZERO_REG,
+                            a: rl,
+                            b: rr,
+                        });
                         // move remainder from R15 into the destination register
-                        self.emit(format!("  add {},{},R15", rd, Register::ZERO_REG));
+                        self.push_asm(S16Instr::Add {
+                            d: rd,
+                            a: Register::ZERO_REG,
+                            b: Register::R15,
+                        });
                     } else {
-                        self.emit(format!("  {op_str} {rd},{rl},{rr}"));
+                        let instr = match op {
+                            ArithOp::Add => S16Instr::Add {
+                                d: rd,
+                                a: rl,
+                                b: rr,
+                            },
+                            ArithOp::Sub => S16Instr::Sub {
+                                d: rd,
+                                a: rl,
+                                b: rr,
+                            },
+                            ArithOp::Mul => S16Instr::Mul {
+                                d: rd,
+                                a: rl,
+                                b: rr,
+                            },
+                            ArithOp::Div => S16Instr::Div {
+                                d: rd,
+                                a: rl,
+                                b: rr,
+                            },
+                            ArithOp::Mod => unreachable!(),
+                        };
+                        self.push_asm(instr);
                     }
 
                     self.reg.bind_var_to_reg(dst.clone(), rd);
@@ -247,7 +258,7 @@ impl Codegen {
             Instr::Load { dst, addr } => {
                 let (ra, free_a) = self.ensure_in_reg(addr);
                 let rd = self.prepare_def_reg(dst);
-                self.emit(format!("  load {rd},0[{ra}]"));
+                self.push_asm(S16Instr::load_disp(rd, 0, ra));
                 self.reg.bind_var_to_reg(dst.clone(), rd);
                 self.reg.mark_dirty(dst);
                 if free_a && ra != rd {
@@ -257,7 +268,7 @@ impl Codegen {
             Instr::Store { addr, src } => {
                 let (ra, free_a) = self.ensure_in_reg(addr);
                 let (rs, free_s) = self.ensure_in_reg(src);
-                self.emit(format!("  store {rs},0[{ra}]"));
+                self.push_asm(S16Instr::store_disp(rs, 0, ra));
 
                 // If addr is AddrOf(name), the store writes to the memory
                 // location of global variable `name`. Any cached register
@@ -283,11 +294,15 @@ impl Codegen {
                 let (ri, free_i) = self.ensure_in_reg(index);
                 let addr = self.allocate_temp_reg();
                 self.note_user_var(base);
-                self.emit(format!("  lea {},{}[{}]", addr, base, Register::ZERO_REG));
-                self.emit(format!("  add {},{},{}", addr, addr, ri));
+                self.push_asm(S16Instr::lea_label(addr, base.as_str()));
+                self.push_asm(S16Instr::Add {
+                    d: addr,
+                    a: addr,
+                    b: ri,
+                });
 
                 let rd = self.prepare_def_reg(dst);
-                self.emit(format!("  load {},0[{}]", rd, addr));
+                self.push_asm(S16Instr::load_disp(rd, 0, addr));
                 self.reg.bind_var_to_reg(dst.clone(), rd);
                 self.reg.mark_dirty(dst);
 
@@ -301,9 +316,13 @@ impl Codegen {
                 let (rs, free_s) = self.ensure_in_reg(src);
                 let addr = self.allocate_temp_reg();
                 self.note_user_var(base);
-                self.emit(format!("  lea {},{}[{}]", addr, base, Register::ZERO_REG));
-                self.emit(format!("  add {},{},{}", addr, addr, ri));
-                self.emit(format!("  store {},0[{}]", rs, addr));
+                self.push_asm(S16Instr::lea_label(addr, base.as_str()));
+                self.push_asm(S16Instr::Add {
+                    d: addr,
+                    a: addr,
+                    b: ri,
+                });
+                self.push_asm(S16Instr::store_disp(rs, 0, addr));
                 self.reg.free_reg(addr);
                 if free_i {
                     self.reg.free_reg(ri);
@@ -327,15 +346,13 @@ impl Codegen {
                 // the call), while still spilling live variables.
                 let mut spill_out = Vec::new();
                 self.reg.spill_caller_saved(&mut spill_out);
-                for line in spill_out {
-                    self.emit(line);
-                }
+                self.drain_regalloc(spill_out);
 
                 // Step 3: Move evaluated args into parameter registers.
                 for (i, &(ra, free_a)) in arg_info.iter().enumerate() {
                     let target_r = Register::PARAM_REGS[i];
                     if ra != target_r {
-                        self.emit(format!("  add {},{},{}", target_r, Register::ZERO_REG, ra));
+                        self.push_asm(S16Instr::mov(target_r, ra));
                     }
                     if free_a {
                         self.reg.free_reg(ra);
@@ -343,12 +360,7 @@ impl Codegen {
                 }
 
                 // Step 4: Emit the call.
-                self.emit(format!(
-                    "  jal {},{}[{}]",
-                    Register::LINK_REG,
-                    func,
-                    Register::ZERO_REG
-                ));
+                self.push_asm(S16Instr::jal_label(Register::LINK_REG, func.as_str()));
 
                 // Step 5: After the call, all caller-saved registers may
                 // be clobbered by the callee. Free any remaining stale
@@ -369,12 +381,7 @@ impl Codegen {
                 if let Some(v) = value {
                     let (rv, free_v) = self.ensure_in_reg(v);
                     if rv != Register::R1 {
-                        self.emit(format!(
-                            "  add {},{},{}",
-                            Register::R1,
-                            Register::ZERO_REG,
-                            rv
-                        ));
+                        self.push_asm(S16Instr::mov(Register::R1, rv));
                     }
                     if free_v {
                         self.reg.free_reg(rv);
@@ -382,9 +389,7 @@ impl Codegen {
                 }
                 let mut out = Vec::new();
                 self.reg.flush_globals(&mut out);
-                for l in out {
-                    self.emit(l);
-                }
+                self.drain_regalloc(out);
             }
             Instr::ArrayDecl { .. } => {
                 // Array declarations are handled by finish_codegen
