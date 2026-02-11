@@ -231,9 +231,9 @@ impl Codegen {
         });
 
         // Save callee-saved registers
-        // They are stored relative to the NEW stack pointer (looking backward)
+        // They are stored relative to the NEW stack pointer, after the spill slots
         for (i, &reg) in used_callee.iter().enumerate() {
-            let disp = -(1 + saved_count as i32) + i as i32;
+            let disp = -(max_slots as i32) - 1 - i as i32;
             prologue.push(AsmItem::Instruction {
                 text: format!("  store {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
@@ -242,7 +242,7 @@ impl Codegen {
 
         // Restore callee-saved registers
         for (i, &reg) in used_callee.iter().enumerate().rev() {
-            let disp = -(1 + saved_count as i32) + i as i32;
+            let disp = -(max_slots as i32) - 1 - i as i32;
             epilogue.push(AsmItem::Instruction {
                 text: format!("  load {},{}[{}]", reg, disp, Register::STACK_PTR),
                 ir_map: None,
