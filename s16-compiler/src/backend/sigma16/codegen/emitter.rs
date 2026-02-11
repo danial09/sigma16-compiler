@@ -250,6 +250,10 @@ impl Codegen {
             });
         }
 
+        // Epilogue label for early returns
+        let epilogue_label = format!("ret_{}", name);
+        epilogue.push(AsmItem::Label(epilogue_label, func_end_ir));
+
         // Restore callee-saved registers
         for (i, &reg) in used_callee.iter().enumerate().rev() {
             let disp = -(max_slots as i64) - 1 - i as i64;

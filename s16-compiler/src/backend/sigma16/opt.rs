@@ -1,5 +1,5 @@
-use super::codegen::item::{AsmItem, Disp, S16Instr};
 use super::abi::Register;
+use super::codegen::item::{AsmItem, Disp, S16Instr};
 
 pub trait AsmPass {
     fn run(&self, items: &mut Vec<AsmItem>);
@@ -28,13 +28,18 @@ impl PassManager {
 /// Removes jumps to the immediately following label.
 pub struct JumpOptimizer;
 
-impl AsmPass for JumpOptimizer {
-    fn run(&self, items: &mut Vec<AsmItem>) {
+impl JumpOptimizer {
+    /// Remove any `jump X` immediately followed by label `X` in a flat list.
+    fn eliminate_fallthrough_jumps(items: &mut Vec<AsmItem>) {
         let mut i = 0;
         while i + 1 < items.len() {
             let mut remove = false;
             if let AsmItem::Instr {
-                instr: S16Instr::Jump { disp: Disp::Label(target), .. },
+                instr:
+                    S16Instr::Jump {
+                        disp: Disp::Label(target),
+                        ..
+                    },
                 ..
             } = &items[i]
             {
@@ -50,6 +55,36 @@ impl AsmPass for JumpOptimizer {
                 i += 1;
             }
         }
+    }
+}
+
+impl AsmPass for JumpOptimizer {
+    fn run(&self, items: &mut Vec<AsmItem>) {
+        // Optimize inside function bodies and at the body→epilogue boundary
+        for item in items.iter_mut() {
+            if let AsmItem::Function { body, epilogue, .. } = item {
+                Self::eliminate_fallthrough_jumps(body);
+                Self::eliminate_fallthrough_jumps(epilogue);
+                // Check boundary: last instruction of body jumping to first label of epilogue
+                if let Some(AsmItem::Instr {
+                    instr:
+                        S16Instr::Jump {
+                            disp: Disp::Label(target),
+                            ..
+                        },
+                    ..
+                }) = body.last()
+                {
+                    if let Some(AsmItem::Label(label_name, _)) = epilogue.first() {
+                        if target == label_name {
+                            body.pop();
+                        }
+                    }
+                }
+            }
+        }
+        // Optimize top-level items
+        Self::eliminate_fallthrough_jumps(items);
     }
 }
 
@@ -83,7 +118,11 @@ impl AsmPass for PrologueEpilogueOptimizer {
                     // We want to keep only the final jump 0[R13].
                     if let Some(jump_item) = epilogue.last().cloned() {
                         if let AsmItem::Instr {
-                            instr: S16Instr::Jump { disp: Disp::Num(0), .. },
+                            instr:
+                                S16Instr::Jump {
+                                    disp: Disp::Num(0),
+                                    idx: Register::LINK_REG,
+                                },
                             ..
                         } = &jump_item
                         {
@@ -124,15 +163,12 @@ impl PeepholeOptimizer {
 
             if let AsmItem::Instr {
                 instr: S16Instr::Add { d, a, b },
-                ir_map,
+                ..
             } = &instrs[i]
             {
-                // Remove redundant `add Rx,R0,Rx` (identity move)
+                // Remove redundant `add Rx,R0,Rx` (identity move / no-op)
                 if *a == Register::ZERO_REG && b == d {
-                    // Preserve mapping-bearing instructions
-                    if ir_map.is_none() {
-                        remove = true;
-                    }
+                    remove = true;
                 }
             }
 

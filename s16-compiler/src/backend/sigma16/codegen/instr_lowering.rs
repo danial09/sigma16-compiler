@@ -373,6 +373,9 @@ impl Codegen {
 
                 // Step 6: Bind return value.
                 if let Some(dst) = ret {
+                    if dst.kind == VarKind::Global {
+                        self.note_user_var(&dst.name);
+                    }
                     self.reg.bind_var_to_reg(dst.clone(), Register::R1);
                     self.reg.mark_dirty(dst);
                 }
@@ -390,6 +393,11 @@ impl Codegen {
                 let mut out = Vec::new();
                 self.reg.flush_globals(&mut out);
                 self.drain_regalloc(out);
+                // Jump to the function epilogue so early returns work correctly
+                if let Some(func_name) = &self.current_func_name {
+                    let epilogue_label = format!("ret_{}", func_name);
+                    self.push_asm(S16Instr::jump_label(&epilogue_label));
+                }
             }
             Instr::ArrayDecl { .. } => {
                 // Array declarations are handled by finish_codegen

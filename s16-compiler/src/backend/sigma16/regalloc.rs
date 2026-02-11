@@ -196,6 +196,10 @@ impl RegAllocator for GreedyRegAllocator {
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool) {
         match v {
+            Value::Imm(0) => {
+                // R0 is hardwired to zero — no allocation needed
+                (Register::ZERO_REG, true)
+            }
             Value::Imm(i) => {
                 let r = self.allocate_reg(out);
                 out.push(S16Instr::lea_imm(r, *i));
@@ -508,6 +512,10 @@ impl RegAllocator for AdvancedRegAllocator {
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool) {
         match v {
+            Value::Imm(0) => {
+                // R0 is hardwired to zero — no allocation needed
+                (Register::ZERO_REG, true)
+            }
             Value::Imm(i) => {
                 let r = self.allocate_reg(out);
                 out.push(S16Instr::lea_imm(r, *i));

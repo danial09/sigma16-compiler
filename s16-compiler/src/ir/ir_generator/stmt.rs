@@ -233,12 +233,75 @@ impl Gen {
             }
         }
 
+        // Prefer direct call assignment to avoid unnecessary temp:
+        //   `result = CALL f(args)` instead of `temp __t = CALL f(args); result = __t`
+        if let Expr::Call {
+            id,
+            name: func_name,
+            args,
+        } = rhs
+        {
+            return self.lower_assign_call(name, *id, func_name, args);
+        }
+
         let v = self.eval_as_value(rhs)?;
         self.emit(Instr::Assign {
             dst: self.get_var(name.to_string()),
             src: Rhs::Value(v),
         });
         Ok(())
+    }
+
+    /// Lower `target = func(args)` directly without an intermediate temp.
+    fn lower_assign_call(
+        &mut self,
+        target: &str,
+        call_id: AstNodeId,
+        func_name: &str,
+        args: &[Expr],
+    ) -> Result<(), CompileError> {
+        // Validate: Check if function exists (same validation as eval_as_value)
+        match self.symbols.lookup_global(func_name) {
+            Some(info) if matches!(info.kind, SymbolKind::Function) => {
+                if let Some(expected) = info.param_count {
+                    if args.len() != expected {
+                        return Err(self.make_error(
+                            SemanticErrorKind::ArgumentCountMismatch,
+                            call_id,
+                            format!(
+                                "Function '{}' expects {} argument{}, got {}",
+                                func_name,
+                                expected,
+                                if expected == 1 { "" } else { "s" },
+                                args.len()
+                            ),
+                        ));
+                    }
+                }
+
+                let mut vs = Vec::new();
+                for a in args {
+                    vs.push(self.eval_as_value(a)?);
+                }
+                let dst = self.get_var(target.to_string());
+                self.emit(Instr::Call {
+                    func: func_name.to_string(),
+                    args: vs,
+                    ret: Some(dst),
+                });
+                Ok(())
+            }
+            Some(_info) => Err(self.make_error(
+                SemanticErrorKind::ArrayUsedAsFunction,
+                call_id,
+                format!("Array '{}' used as function", func_name),
+            )),
+            None => Err(self.make_error(
+                SemanticErrorKind::UndefinedFunction,
+                call_id,
+                format!("Function '{}' is not defined", func_name),
+            )),
+        }
     }
 
     pub fn lower_if(
