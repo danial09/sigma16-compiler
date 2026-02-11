@@ -1,4 +1,5 @@
-use super::codegen::item::AsmItem;
+use super::codegen::item::{AsmItem, Disp, S16Instr};
+use super::abi::Register;
 
 pub trait AsmPass {
     fn run(&self, items: &mut Vec<AsmItem>);
@@ -32,14 +33,14 @@ impl AsmPass for JumpOptimizer {
         let mut i = 0;
         while i + 1 < items.len() {
             let mut remove = false;
-            if let AsmItem::Instruction { text, .. } = &items[i] {
-                let trimmed = text.trim();
-                if trimmed.starts_with("jump ") {
-                    let target = &trimmed[5..];
-                    if let AsmItem::Label(label_name, _) = &items[i + 1] {
-                        if label_name == target {
-                            remove = true;
-                        }
+            if let AsmItem::Instr {
+                instr: S16Instr::Jump { disp: Disp::Label(target), .. },
+                ..
+            } = &items[i]
+            {
+                if let AsmItem::Label(label_name, _) = &items[i + 1] {
+                    if target == label_name {
+                        remove = true;
                     }
                 }
             }
@@ -75,17 +76,19 @@ impl AsmPass for PrologueEpilogueOptimizer {
 
                     // The epilogue normally contains:
                     // 1. restore callee-saved
-                    // 2. lea R13, frame+1[R13]
-                    // 3. load R14, -1[R13]
-                    // 4. jump 0[R14]
+                    // 2. lea R14, -frame[R14]
+                    // 3. load R13, 0[R14]
+                    // 4. jump 0[R13]
 
-                    // We want to keep only the jump.
-                    if let Some(jump_instr) = epilogue.last().cloned() {
-                        if let AsmItem::Instruction { text, .. } = &jump_instr {
-                            if text.contains("jump 0[") {
-                                epilogue.clear();
-                                epilogue.push(jump_instr);
-                            }
+                    // We want to keep only the final jump 0[R13].
+                    if let Some(jump_item) = epilogue.last().cloned() {
+                        if let AsmItem::Instr {
+                            instr: S16Instr::Jump { disp: Disp::Num(0), .. },
+                            ..
+                        } = &jump_item
+                        {
+                            epilogue.clear();
+                            epilogue.push(jump_item);
                         }
                     }
                 }
@@ -119,26 +122,16 @@ impl PeepholeOptimizer {
         while i < instrs.len() {
             let mut remove = false;
 
-            if let AsmItem::Instruction { text, ir_map, .. } = &instrs[i] {
-                let trimmed = text.trim();
-
-                // Remove redundant `add Rx,R0,Rx`
-                if trimmed.starts_with("add ") {
-                    let parts: Vec<&str> = trimmed.split(',').collect();
-                    if parts.len() == 3 {
-                        let dst = parts[0].split_whitespace().nth(1);
-                        let src1 = parts[1].trim();
-                        let src2 = parts[2].trim();
-
-                        if let Some(dst_reg) = dst {
-                            // Check if it's `add Rx,R0,Rx`
-                            if src1 == "R0" && src2 == dst_reg {
-                                // Preserve mapping-bearing instructions
-                                if ir_map.is_none() {
-                                    remove = true;
-                                }
-                            }
-                        }
+            if let AsmItem::Instr {
+                instr: S16Instr::Add { d, a, b },
+                ir_map,
+            } = &instrs[i]
+            {
+                // Remove redundant `add Rx,R0,Rx` (identity move)
+                if *a == Register::ZERO_REG && b == d {
+                    // Preserve mapping-bearing instructions
+                    if ir_map.is_none() {
+                        remove = true;
                     }
                 }
             }

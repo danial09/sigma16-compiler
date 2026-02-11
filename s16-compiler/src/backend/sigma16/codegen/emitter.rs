@@ -1,6 +1,6 @@
 use super::super::abi::Register;
 use super::super::regalloc::{GreedyRegAllocator, RegAllocator};
-use super::item::AsmItem;
+use super::item::{AsmItem, Disp, S16Instr};
 use crate::ir::{Value, Var};
 use std::collections::HashSet;
 
@@ -62,27 +62,39 @@ impl Codegen {
         }
     }
 
-    pub fn emit<S: Into<String>>(&mut self, s: S) {
-        let line = s.into();
-        let map = self.current_ir;
-        let item = if line.ends_with(':') && !line.starts_with(' ') {
-            AsmItem::Label(line[..line.len() - 1].to_string(), map)
-        } else {
-            AsmItem::Instruction {
-                text: line.clone(),
-                ir_map: map,
-            }
-        };
+    // ── Item emission helpers ───────────────────────────────────────────
 
+    /// Push a typed machine instruction into the current buffer.
+    pub fn push_asm(&mut self, instr: S16Instr) {
+        let item = AsmItem::Instr {
+            instr,
+            ir_map: self.current_ir,
+        };
+        self.push_item(item);
+    }
+
+    /// Push a label into the current buffer.
+    pub fn push_label(&mut self, name: String) {
+        let item = AsmItem::Label(name, self.current_ir);
+        self.push_item(item);
+    }
+
+    /// Push a raw AsmItem into the current buffer (func_buf or top_level_buf).
+    fn push_item(&mut self, item: AsmItem) {
         if let Some(buf) = &mut self.func_buf {
             buf.push(item);
         } else if let Some(buf) = &mut self.top_level_buf {
             buf.push(item);
         } else {
             self.top_level_buf = Some(Vec::new());
-            // Don't call begin_region() here - it clears variable bindings that were just made!
-            // begin_region() should only be called at function/region boundaries.
             self.top_level_buf.as_mut().unwrap().push(item);
+        }
+    }
+
+    /// Drain regalloc-emitted instructions into the current buffer.
+    pub fn drain_regalloc(&mut self, instrs: Vec<S16Instr>) {
+        for instr in instrs {
+            self.push_asm(instr);
         }
     }
 
@@ -91,9 +103,7 @@ impl Codegen {
         // otherwise begin_region() will discard them.
         let mut flush_out = Vec::new();
         self.reg.flush_dirty(&mut flush_out);
-        for l in flush_out {
-            self.emit(l);
-        }
+        self.drain_regalloc(flush_out);
         self.flush_top_level();
         self.func_buf = Some(Vec::new());
         self.current_func_name = Some(name);
@@ -111,19 +121,18 @@ impl Codegen {
                 self.has_top_level_code = true;
                 self.out.insert(
                     0,
-                    AsmItem::Instruction {
-                        text: format!(
-                            "  lea {},stack[{}]",
-                            Register::STACK_PTR,
-                            Register::ZERO_REG
-                        ),
+                    AsmItem::Instr {
+                        instr: S16Instr::lea_label(Register::STACK_PTR, "stack"),
                         ir_map: None,
                     },
                 );
                 self.out.insert(
                     1,
-                    AsmItem::Instruction {
-                        text: "  jump prog_start".to_string(),
+                    AsmItem::Instr {
+                        instr: S16Instr::Jump {
+                            disp: Disp::Label("prog_start".to_string()),
+                            idx: Register::ZERO_REG,
+                        },
                         ir_map: None,
                     },
                 );
@@ -137,13 +146,12 @@ impl Codegen {
                     .push(AsmItem::Label("prog_start".to_string(), None));
             }
             if max_slots > 0 {
-                self.out.push(AsmItem::Instruction {
-                    text: format!(
-                        "  lea {},{}[{}]",
-                        Register::STACK_PTR,
-                        max_slots,
-                        Register::STACK_PTR
-                    ),
+                self.out.push(AsmItem::Instr {
+                    instr: S16Instr::Lea {
+                        d: Register::STACK_PTR,
+                        disp: Disp::Num(max_slots as i64),
+                        idx: Register::STACK_PTR,
+                    },
                     ir_map: None,
                 });
             }
@@ -151,13 +159,12 @@ impl Codegen {
                 self.out.push(item);
             }
             if max_slots > 0 {
-                self.out.push(AsmItem::Instruction {
-                    text: format!(
-                        "  lea {},-{}[{}]",
-                        Register::STACK_PTR,
-                        max_slots,
-                        Register::STACK_PTR
-                    ),
+                self.out.push(AsmItem::Instr {
+                    instr: S16Instr::Lea {
+                        d: Register::STACK_PTR,
+                        disp: Disp::Num(-(max_slots as i64)),
+                        idx: Register::STACK_PTR,
+                    },
                     ir_map: None,
                 });
             }
@@ -169,8 +176,8 @@ impl Codegen {
             .into_iter()
             .filter(|reg| {
                 body.iter().any(|item| {
-                    if let AsmItem::Instruction { text, .. } = item {
-                        text.contains(reg.as_str())
+                    if let AsmItem::Instr { instr, .. } = item {
+                        instr.uses_register(*reg)
                     } else {
                         false
                     }
@@ -181,8 +188,8 @@ impl Codegen {
 
     pub fn is_leaf(&self, body: &[AsmItem]) -> bool {
         !body.iter().any(|item| {
-            if let AsmItem::Instruction { text, .. } = item {
-                text.contains("jal ")
+            if let AsmItem::Instr { instr, .. } = item {
+                instr.is_call()
             } else {
                 false
             }
@@ -210,7 +217,6 @@ impl Codegen {
         // Stack layout when function is active:
         // [old_R14+0]: Return address (R13)
         // [old_R14+1]: First local/spill slot
-        // [old_R14+2]: Second local/spill slot
         // ...
         // [old_R14+max_slots]: Last local/spill slot
         // [old_R14+max_slots+1]: First callee-saved register
@@ -219,61 +225,62 @@ impl Codegen {
         // [old_R14+total_frame]: <-- new R14 points here
 
         // Save return address at current stack pointer
-        prologue.push(AsmItem::Instruction {
-            text: format!("  store {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
+        let total_frame = frame + 1;
+        prologue.push(AsmItem::Instr {
+            instr: S16Instr::store_disp(Register::LINK_REG, 0, Register::STACK_PTR),
             ir_map: func_start_ir,
         });
 
-        // Adjust stack pointer upward for return address, local variables, and callee-saved regs
-        let total_frame = frame + 1;
-        prologue.push(AsmItem::Instruction {
-            text: format!(
-                "  lea {},{}[{}]",
-                Register::STACK_PTR,
-                total_frame,
-                Register::STACK_PTR
-            ),
+        // Adjust stack pointer upward
+        prologue.push(AsmItem::Instr {
+            instr: S16Instr::Lea {
+                d: Register::STACK_PTR,
+                disp: Disp::Num(total_frame as i64),
+                idx: Register::STACK_PTR,
+            },
             ir_map: func_start_ir,
         });
 
         // Save callee-saved registers
-        // They are stored relative to the NEW stack pointer, after the spill slots
         for (i, &reg) in used_callee.iter().enumerate() {
-            let disp = -(max_slots as i32) - 1 - i as i32;
-            prologue.push(AsmItem::Instruction {
-                text: format!("  store {},{}[{}]", reg, disp, Register::STACK_PTR),
+            let disp = -(max_slots as i64) - 1 - i as i64;
+            prologue.push(AsmItem::Instr {
+                instr: S16Instr::store_disp(reg, disp, Register::STACK_PTR),
                 ir_map: func_start_ir,
             });
         }
 
         // Restore callee-saved registers
         for (i, &reg) in used_callee.iter().enumerate().rev() {
-            let disp = -(max_slots as i32) - 1 - i as i32;
-            epilogue.push(AsmItem::Instruction {
-                text: format!("  load {},{}[{}]", reg, disp, Register::STACK_PTR),
+            let disp = -(max_slots as i64) - 1 - i as i64;
+            epilogue.push(AsmItem::Instr {
+                instr: S16Instr::load_disp(reg, disp, Register::STACK_PTR),
                 ir_map: func_end_ir,
             });
         }
 
         // Move stack pointer back down
-        epilogue.push(AsmItem::Instruction {
-            text: format!(
-                "  lea {},-{}[{}]",
-                Register::STACK_PTR,
-                total_frame,
-                Register::STACK_PTR
-            ),
+        epilogue.push(AsmItem::Instr {
+            instr: S16Instr::Lea {
+                d: Register::STACK_PTR,
+                disp: Disp::Num(-(total_frame as i64)),
+                idx: Register::STACK_PTR,
+            },
             ir_map: func_end_ir,
         });
 
         // Restore return address
-        epilogue.push(AsmItem::Instruction {
-            text: format!("  load {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
+        epilogue.push(AsmItem::Instr {
+            instr: S16Instr::load_disp(Register::LINK_REG, 0, Register::STACK_PTR),
             ir_map: func_end_ir,
         });
 
-        epilogue.push(AsmItem::Instruction {
-            text: format!("  jump 0[{}]", Register::LINK_REG),
+        // Return: jump 0[R13]
+        epilogue.push(AsmItem::Instr {
+            instr: S16Instr::Jump {
+                disp: Disp::Num(0),
+                idx: Register::LINK_REG,
+            },
             ir_map: func_end_ir,
         });
 
@@ -297,9 +304,7 @@ impl Codegen {
         let res = self
             .reg
             .ensure_in_reg(v, &mut tmp_out, &mut |name| noted.push(name.to_string()));
-        for line in tmp_out {
-            self.emit(line);
-        }
+        self.drain_regalloc(tmp_out);
         for name in noted {
             self.note_user_var(&name);
         }
@@ -309,9 +314,7 @@ impl Codegen {
     pub fn allocate_temp_reg(&mut self) -> Register {
         let mut out = Vec::new();
         let r = self.reg.allocate_reg(&mut out);
-        for line in out {
-            self.emit(line);
-        }
+        self.drain_regalloc(out);
         r
     }
 
@@ -325,9 +328,7 @@ impl Codegen {
         let r = self
             .reg
             .prepare_def_reg(var, &mut out, &mut |name| noted.push(name.to_string()));
-        for line in out {
-            self.emit(line);
-        }
+        self.drain_regalloc(out);
         for name in noted {
             self.note_user_var(&name);
         }
@@ -337,9 +338,7 @@ impl Codegen {
     pub fn finish_codegen(mut self) -> super::Sigma16Asm {
         let mut out = Vec::new();
         self.reg.flush_all(&mut out);
-        for l in out {
-            self.emit(l);
-        }
+        self.drain_regalloc(out);
 
         self.flush_top_level();
         if self.func_buf.is_some() {
@@ -348,16 +347,14 @@ impl Codegen {
 
         // trap instruction to terminate program (only if there is top-level code)
         if self.has_top_level_code {
-            self.out.push(AsmItem::Instruction {
-                text: "  trap R0,R0,R0".to_string(),
+            self.out.push(AsmItem::Instr {
+                instr: S16Instr::trap_halt(),
                 ir_map: None,
             });
         }
 
-        self.out.push(AsmItem::Instruction {
-            text: String::new(),
-            ir_map: None,
-        });
+        // Blank separator
+        self.out.push(AsmItem::Blank);
 
         // Collect array names to avoid emitting them twice (once as user_var, once as array)
         let array_names: std::collections::HashSet<&str> = self
@@ -371,8 +368,9 @@ impl Codegen {
             if array_names.contains(name.as_str()) {
                 continue;
             }
-            self.out.push(AsmItem::Instruction {
-                text: format!("{:<8} data   {}", name, init),
+            self.out.push(AsmItem::Data {
+                label: Some(name.clone()),
+                value: *init,
                 ir_map: *ir_map,
             });
         }
@@ -384,15 +382,17 @@ impl Codegen {
                     .and_then(|v| v.get(i))
                     .cloned()
                     .unwrap_or(0);
-                self.out.push(AsmItem::Instruction {
-                    text: format!("     data   {}", val),
+                self.out.push(AsmItem::Data {
+                    label: None,
+                    value: val,
                     ir_map: *ir_map,
                 });
             }
         }
         if self.has_top_level_code {
-            self.out.push(AsmItem::Instruction {
-                text: "stack    data   0".to_string(),
+            self.out.push(AsmItem::Data {
+                label: Some("stack".to_string()),
+                value: 0,
                 ir_map: None,
             });
         }
@@ -417,8 +417,8 @@ impl Codegen {
                     lines.push(name.clone());
                     mapping.push(*ir_map);
                 }
-                AsmItem::Instruction { text, ir_map } => {
-                    lines.push(text.clone());
+                AsmItem::Instr { instr, ir_map } => {
+                    lines.push(instr.to_string());
                     mapping.push(*ir_map);
                 }
                 AsmItem::Function {
@@ -434,6 +434,23 @@ impl Codegen {
                     Self::flatten_items(prologue, lines, mapping);
                     Self::flatten_items(body, lines, mapping);
                     Self::flatten_items(epilogue, lines, mapping);
+                }
+                AsmItem::Data {
+                    label,
+                    value,
+                    ir_map,
+                } => {
+                    let line = if let Some(lbl) = label {
+                        format!("{:<8} data   {}", lbl, value)
+                    } else {
+                        format!("     data   {}", value)
+                    };
+                    lines.push(line);
+                    mapping.push(*ir_map);
+                }
+                AsmItem::Blank => {
+                    lines.push(String::new());
+                    mapping.push(None);
                 }
             }
         }
