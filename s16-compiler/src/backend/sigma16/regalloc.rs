@@ -162,7 +162,7 @@ impl RegAllocator for GreedyRegAllocator {
                     self.max_slots = self.max_slots.max(self.next_slot);
                     self.next_slot
                 });
-                let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                let offset = -(slot as i32);
                 out.push(format!(
                     "  store {},{}[{}]",
                     reg,
@@ -219,7 +219,7 @@ impl RegAllocator for GreedyRegAllocator {
                     let r = self.allocate_reg(out);
                     if var.is_reg_allocated() {
                         if let Some(&slot) = self.spilled.get(var) {
-                            let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                            let offset = -(slot as i32);
                             out.push(format!("  load {},{}[{}]", r, offset, Register::STACK_PTR));
                         }
                     } else {
@@ -268,7 +268,7 @@ impl RegAllocator for GreedyRegAllocator {
 
         if var.is_reg_allocated() {
             if let Some(&slot) = self.spilled.get(var) {
-                let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                let offset = -(slot as i32);
                 out.push(format!("  load {}, {}[{}]", r, offset, Register::STACK_PTR));
             }
         } else {
@@ -434,7 +434,7 @@ impl AdvancedRegAllocator {
                 self.max_slots = self.max_slots.max(self.next_slot);
                 self.next_slot
             });
-            let offset = -(self.max_slots as i32) + slot as i32 - 1;
+            let offset = -(slot as i32);
             out.push(format!(
                 "  store {},{}[{}]",
                 reg,
@@ -494,7 +494,7 @@ impl RegAllocator for AdvancedRegAllocator {
                         self.max_slots = self.max_slots.max(self.next_slot);
                         self.next_slot
                     });
-                    let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                    let offset = -(slot as i32);
                     out.push(format!(
                         "  store {},{}[{}]",
                         reg,
@@ -550,7 +550,7 @@ impl RegAllocator for AdvancedRegAllocator {
                     let r = self.allocate_reg(out);
                     if var.is_reg_allocated() {
                         if let Some(&slot) = self.spilled.get(var) {
-                            let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                            let offset = -(slot as i32);
                             out.push(format!("  load {},{}[{}]", r, offset, Register::STACK_PTR));
                         }
                     } else {
@@ -597,7 +597,7 @@ impl RegAllocator for AdvancedRegAllocator {
 
         if var.is_reg_allocated() {
             if let Some(&slot) = self.spilled.get(var) {
-                let offset = -(self.max_slots as i32) + slot as i32 - 1;
+                let offset = -(slot as i32);
                 out.push(format!("  load {},{}[{}]", r, offset, Register::STACK_PTR));
             }
         } else {
@@ -688,14 +688,22 @@ impl RegAllocator for AdvancedRegAllocator {
     // --- Advanced methods ---
 
     fn flush_dirty(&mut self, out: &mut Vec<String>) {
-        let dirty_entries: Vec<(Register, Var)> = self
+        // Collect variables that need writing:
+        // 1. Dirty variables (modified since last write-back)
+        // 2. Register-allocated variables with no spill slot yet
+        //    (their value exists only in the register and would be
+        //    irrecoverable after clear_bindings)
+        let entries: Vec<(Register, Var)> = self
             .reg_to_var
             .iter()
-            .filter(|(_, var)| self.dirty.contains(var))
+            .filter(|(_, var)| {
+                self.dirty.contains(var)
+                    || (var.is_reg_allocated() && !self.spilled.contains_key(var))
+            })
             .map(|(&r, v)| (r, v.clone()))
             .collect();
 
-        for (reg, var) in dirty_entries {
+        for (reg, var) in entries {
             // Skip writing dead variables
             if !self.is_dead(&var) {
                 self.write_back(reg, &var, out);
