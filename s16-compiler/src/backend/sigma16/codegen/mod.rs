@@ -133,6 +133,14 @@ impl Codegen {
             self.emit_instr(instr);
             self.reg.clear_temp_busy();
         }
+
+        // Flush any remaining dirty globals while current_ir still points to
+        // the last instruction, so the generated store instructions receive
+        // the correct IR-to-source mapping.
+        let mut out = Vec::new();
+        self.reg.flush_all(&mut out);
+        self.drain_regalloc(out);
+
         self.current_ir = None;
     }
 }
