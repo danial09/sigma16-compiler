@@ -335,12 +335,3 @@ pub enum AsmItem {
     /// Empty line separator.
     Blank,
 }
-
-impl AsmItem {
-    pub fn as_label(&self) -> Option<&str> {
-        match self {
-            AsmItem::Label(s, _) => Some(s),
-            _ => None,
-        }
-    }
-}
