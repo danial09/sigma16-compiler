@@ -13,6 +13,10 @@ pub struct Codegen {
     pub emitted_header: bool,
     pub has_top_level_code: bool,
     pub top_level_buf: Option<Vec<AsmItem>>,
+    /// Accumulated top-level code across all top-level regions.
+    /// This is populated by `flush_top_level` and emitted as a single
+    /// contiguous block under `prog_start` in `finish_codegen`.
+    pub toplevel_items: Vec<AsmItem>,
     pub func_buf: Option<Vec<AsmItem>>,
     pub current_func_name: Option<String>,
     pub current_func_ir: Option<usize>,
@@ -37,6 +41,7 @@ impl Codegen {
             emitted_header: false,
             has_top_level_code: false,
             top_level_buf: None,
+            toplevel_items: Vec::new(),
             func_buf: None,
             current_func_name: None,
             current_func_ir: None,
@@ -115,38 +120,12 @@ impl Codegen {
     pub fn flush_top_level(&mut self) {
         if let Some(body) = self.top_level_buf.take() {
             let max_slots = self.reg.get_max_slots();
-            // Emit the program header (stack setup + jump) on the first
-            // flush that actually contains top-level instructions.
-            if !self.has_top_level_code {
-                self.has_top_level_code = true;
-                self.out.insert(
-                    0,
-                    AsmItem::Instr {
-                        instr: S16Instr::lea_label(Register::STACK_PTR, "stack"),
-                        ir_map: None,
-                    },
-                );
-                self.out.insert(
-                    1,
-                    AsmItem::Instr {
-                        instr: S16Instr::Jump {
-                            disp: Disp::Label("prog_start".to_string()),
-                            idx: Register::ZERO_REG,
-                        },
-                        ir_map: None,
-                    },
-                );
-            }
-            if !self
-                .out
-                .iter()
-                .any(|item| item.as_label() == Some("prog_start"))
-            {
-                self.out
-                    .push(AsmItem::Label("prog_start".to_string(), None));
-            }
+            self.has_top_level_code = true;
+
+            // Accumulate top-level code into toplevel_items.
+            // Each region gets its own stack adjustments if needed.
             if max_slots > 0 {
-                self.out.push(AsmItem::Instr {
+                self.toplevel_items.push(AsmItem::Instr {
                     instr: S16Instr::Lea {
                         d: Register::STACK_PTR,
                         disp: Disp::Num(max_slots as i64),
@@ -156,10 +135,10 @@ impl Codegen {
                 });
             }
             for item in body {
-                self.out.push(item);
+                self.toplevel_items.push(item);
             }
             if max_slots > 0 {
-                self.out.push(AsmItem::Instr {
+                self.toplevel_items.push(AsmItem::Instr {
                     instr: S16Instr::Lea {
                         d: Register::STACK_PTR,
                         disp: Disp::Num(-(max_slots as i64)),
@@ -349,12 +328,33 @@ impl Codegen {
             self.flush_function();
         }
 
-        // trap instruction to terminate program (only if there is top-level code)
+        // Build final output with correct ordering:
+        //   header (lea stack + jump prog_start)
+        //   all functions (already in self.out)
+        //   prog_start label + all top-level code + trap
+        //   data section
         if self.has_top_level_code {
-            self.out.push(AsmItem::Instr {
+            // Build final output: top-level code first, then functions.
+            let mut final_out = Vec::new();
+
+            // Stack pointer setup
+            final_out.push(AsmItem::Instr {
+                instr: S16Instr::lea_label(Register::STACK_PTR, "stack"),
+                ir_map: None,
+            });
+
+            // All accumulated top-level code
+            final_out.append(&mut self.toplevel_items);
+
+            // Halt
+            final_out.push(AsmItem::Instr {
                 instr: S16Instr::trap_halt(),
                 ir_map: None,
             });
+
+            // All functions follow after the trap
+            final_out.append(&mut self.out);
+            self.out = final_out;
         }
 
         // Blank separator
