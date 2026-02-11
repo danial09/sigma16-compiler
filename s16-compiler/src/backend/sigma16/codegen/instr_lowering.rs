@@ -20,6 +20,8 @@ impl Codegen {
                 for l in out {
                     self.emit(l);
                 }
+                // Record the IR index for epilogue mapping
+                self.current_func_end_ir = self.current_ir;
                 self.flush_function();
             }
             Instr::Label(lbl) => {
@@ -159,6 +161,8 @@ impl Codegen {
                         if can_rebind {
                             self.reg.bind_var_to_reg(dst.clone(), rs);
                             self.reg.mark_dirty(dst);
+                            // Emit a no-op move to preserve source→IR→ASM mapping
+                            self.emit(format!("  add {rs},{},{}", Register::ZERO_REG, rs));
                         } else {
                             // Use prepare_def_reg to avoid loading old value of dst
                             let rd = self.prepare_def_reg(dst);

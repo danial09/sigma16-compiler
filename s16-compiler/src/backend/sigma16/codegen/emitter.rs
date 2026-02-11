@@ -16,6 +16,7 @@ pub struct Codegen {
     pub func_buf: Option<Vec<AsmItem>>,
     pub current_func_name: Option<String>,
     pub current_func_ir: Option<usize>,
+    pub current_func_end_ir: Option<usize>,
     pub current_ir: Option<usize>,
     pub advanced_mode: bool,
 }
@@ -39,6 +40,7 @@ impl Codegen {
             func_buf: None,
             current_func_name: None,
             current_func_ir: None,
+            current_func_end_ir: None,
             current_ir: None,
             advanced_mode,
         }
@@ -47,7 +49,8 @@ impl Codegen {
     pub fn note_user_var(&mut self, name: &str) {
         if !self.user_vars_set.contains(name) {
             self.user_vars_set.insert(name.to_string());
-            self.user_vars.push((name.to_string(), 0, self.current_ir));
+            // No IR mapping for unspecified initial value; runtime stores carry the mapping.
+            self.user_vars.push((name.to_string(), 0, None));
         }
     }
 
@@ -95,6 +98,7 @@ impl Codegen {
         self.func_buf = Some(Vec::new());
         self.current_func_name = Some(name);
         self.current_func_ir = self.current_ir;
+        self.current_func_end_ir = None;
         self.reg.begin_region();
     }
 
@@ -196,6 +200,8 @@ impl Codegen {
         let saved_count = used_callee.len();
         let frame = max_slots + saved_count;
         let is_leaf = self.is_leaf(&body);
+        let func_start_ir = self.current_func_ir;
+        let func_end_ir = self.current_func_end_ir.or(func_start_ir);
 
         let mut prologue = Vec::new();
         let mut epilogue = Vec::new();
@@ -215,7 +221,7 @@ impl Codegen {
         // Save return address at current stack pointer
         prologue.push(AsmItem::Instruction {
             text: format!("  store {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
-            ir_map: None,
+            ir_map: func_start_ir,
         });
 
         // Adjust stack pointer upward for return address, local variables, and callee-saved regs
@@ -227,7 +233,7 @@ impl Codegen {
                 total_frame,
                 Register::STACK_PTR
             ),
-            ir_map: None,
+            ir_map: func_start_ir,
         });
 
         // Save callee-saved registers
@@ -236,7 +242,7 @@ impl Codegen {
             let disp = -(max_slots as i32) - 1 - i as i32;
             prologue.push(AsmItem::Instruction {
                 text: format!("  store {},{}[{}]", reg, disp, Register::STACK_PTR),
-                ir_map: None,
+                ir_map: func_start_ir,
             });
         }
 
@@ -245,7 +251,7 @@ impl Codegen {
             let disp = -(max_slots as i32) - 1 - i as i32;
             epilogue.push(AsmItem::Instruction {
                 text: format!("  load {},{}[{}]", reg, disp, Register::STACK_PTR),
-                ir_map: None,
+                ir_map: func_end_ir,
             });
         }
 
@@ -257,18 +263,18 @@ impl Codegen {
                 total_frame,
                 Register::STACK_PTR
             ),
-            ir_map: None,
+            ir_map: func_end_ir,
         });
 
         // Restore return address
         epilogue.push(AsmItem::Instruction {
             text: format!("  load {},0[{}]", Register::LINK_REG, Register::STACK_PTR),
-            ir_map: None,
+            ir_map: func_end_ir,
         });
 
         epilogue.push(AsmItem::Instruction {
             text: format!("  jump 0[{}]", Register::LINK_REG),
-            ir_map: None,
+            ir_map: func_end_ir,
         });
 
         self.out.push(AsmItem::Function {

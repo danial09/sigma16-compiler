@@ -36,7 +36,7 @@ impl AsmPass for JumpOptimizer {
                 let trimmed = text.trim();
                 if trimmed.starts_with("jump ") {
                     let target = &trimmed[5..];
-                    if let AsmItem::Label(label_name, _) = &items[i+1] {
+                    if let AsmItem::Label(label_name, _) = &items[i + 1] {
                         if label_name == target {
                             remove = true;
                         }
@@ -65,7 +65,8 @@ impl AsmPass for PrologueEpilogueOptimizer {
                 used_callee,
                 is_leaf,
                 ..
-            } = item {
+            } = item
+            {
                 // If it's a leaf function and doesn't use any stack space beyond R14
                 // and doesn't use any callee-saved registers.
                 // frame_size here is max_slots.
@@ -118,7 +119,7 @@ impl PeepholeOptimizer {
         while i < instrs.len() {
             let mut remove = false;
 
-            if let AsmItem::Instruction { text, .. } = &instrs[i] {
+            if let AsmItem::Instruction { text, ir_map, .. } = &instrs[i] {
                 let trimmed = text.trim();
 
                 // Remove redundant `add Rx,R0,Rx`
@@ -132,7 +133,10 @@ impl PeepholeOptimizer {
                         if let Some(dst_reg) = dst {
                             // Check if it's `add Rx,R0,Rx`
                             if src1 == "R0" && src2 == dst_reg {
-                                remove = true;
+                                // Preserve mapping-bearing instructions
+                                if ir_map.is_none() {
+                                    remove = true;
+                                }
                             }
                         }
                     }

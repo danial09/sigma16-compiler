@@ -1,9 +1,9 @@
-use crate::ir::ast::{Expr, LValue, Program, Stmt, BinOp as AstBinOp};
-use crate::ir::*;
-use crate::ir::symbol_table::{SymbolInfo, SymbolKind};
-use crate::{CompileError, SemanticErrorKind};
-use super::context::{Gen, FunctionCtx};
+use super::context::{FunctionCtx, Gen};
 use super::expr::map_arith;
+use crate::ir::ast::{BinOp as AstBinOp, Expr, LValue, Program, Stmt};
+use crate::ir::symbol_table::{SymbolInfo, SymbolKind};
+use crate::ir::*;
+use crate::{CompileError, SemanticErrorKind};
 
 impl Gen {
     pub fn lower_program(&mut self, p: &Program) -> Result<(), CompileError> {
@@ -31,7 +31,9 @@ impl Gen {
                         ));
                     }
                 }
-                Stmt::Function { id, name, params, .. } => {
+                Stmt::Function {
+                    id, name, params, ..
+                } => {
                     if let Err(existing) = self.symbols.declare_global(
                         name.clone(),
                         SymbolInfo {
@@ -89,20 +91,39 @@ impl Gen {
             Stmt::Assign { id, target, value } => {
                 self.with_ast_context(*id, None, |this| this.lower_assign_lvalue(target, value))
             }
-            Stmt::If { id, condition, then_branch, else_branch } => {
-                self.lower_if(*id, condition, then_branch, else_branch.as_ref())
-            }
-            Stmt::While { id, condition, body } => {
-                self.lower_while(*id, condition, body)
-            }
-            Stmt::For { id, var, from, to, body } => {
-                self.lower_for(*id, var, from, to, body)
-            }
-            Stmt::ArrayDecl { id, name, size, initial_values } => {
+            Stmt::If {
+                id,
+                condition,
+                then_branch,
+                else_branch,
+            } => self.lower_if(*id, condition, then_branch, else_branch.as_ref()),
+            Stmt::While {
+                id,
+                condition,
+                body,
+            } => self.lower_while(*id, condition, body),
+            Stmt::For {
+                id,
+                var,
+                from,
+                to,
+                body,
+            } => self.lower_for(*id, var, from, to, body),
+            Stmt::ArrayDecl {
+                id,
+                name,
+                size,
+                initial_values,
+            } => {
                 self.with_ast_context(*id, None, |this| {
                     // Declaration already registered in first pass
                     let ir_idx = this.out.instrs.len();
-                    this.out.arrays.push((name.clone(), *size, initial_values.clone(), Some(ir_idx)));
+                    this.out.arrays.push((
+                        name.clone(),
+                        *size,
+                        initial_values.clone(),
+                        Some(ir_idx),
+                    ));
                     this.emit(Instr::ArrayDecl {
                         name: name.clone(),
                         size: *size,
@@ -111,7 +132,12 @@ impl Gen {
                     Ok(())
                 })
             }
-            Stmt::Function { id, name, params, body } => {
+            Stmt::Function {
+                id,
+                name,
+                params,
+                body,
+            } => {
                 // Declaration already registered in first pass
                 self.lower_function(*id, name, params, body)?;
                 Ok(())
@@ -135,12 +161,10 @@ impl Gen {
                     Ok(())
                 })
             }
-            Stmt::ExprStmt { id, expr } => {
-                self.with_ast_context(*id, None, |this| {
-                    let _ = this.eval_as_value(expr)?;
-                    Ok(())
-                })
-            }
+            Stmt::ExprStmt { id, expr } => self.with_ast_context(*id, None, |this| {
+                let _ = this.eval_as_value(expr)?;
+                Ok(())
+            }),
             Stmt::StringDecl { id, name, value } => {
                 self.with_ast_context(*id, None, |this| {
                     // Declaration already registered in first pass
@@ -148,7 +172,9 @@ impl Gen {
                     vals.push(0); // null terminator
                     let size = vals.len();
                     let ir_idx = this.out.instrs.len();
-                    this.out.arrays.push((name.clone(), size, Some(vals.clone()), Some(ir_idx)));
+                    this.out
+                        .arrays
+                        .push((name.clone(), size, Some(vals.clone()), Some(ir_idx)));
                     this.emit(Instr::ArrayDecl {
                         name: name.clone(),
                         size,
@@ -184,14 +210,24 @@ impl Gen {
 
     pub fn lower_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
         // Prefer direct binary assignment for arithmetic to avoid unnecessary temps
-        if let Expr::Binary { left, op, right, .. } = rhs {
-            if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod) {
+        if let Expr::Binary {
+            left, op, right, ..
+        } = rhs
+        {
+            if matches!(
+                op,
+                AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+            ) {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
                 let op = map_arith(*op);
                 self.emit(Instr::Assign {
                     dst: self.get_var(name.to_string()),
-                    src: Rhs::Binary { op, left: l, right: r },
+                    src: Rhs::Binary {
+                        op,
+                        left: l,
+                        right: r,
+                    },
                 });
                 return Ok(());
             }
@@ -220,38 +256,67 @@ impl Gen {
             this.lower_condition_branch_false(cond, false_target)
         })?;
 
-        self.with_parent_component(ControlFlowComponent::ThenBranch, |this| this.emit_block(then_blk))?;
+        self.with_parent_component(ControlFlowComponent::ThenBranch, |this| {
+            this.emit_block(then_blk)
+        })?;
 
         if else_label.is_some() {
-            self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| -> Result<(), CompileError> {
-                this.emit(Instr::Goto(endif.clone()));
-                Ok(())
-            })?;
+            self.with_ast_context(
+                ast_id,
+                Some(ControlFlowComponent::ControlFlowGlue),
+                |this| -> Result<(), CompileError> {
+                    this.emit(Instr::Goto(endif.clone()));
+                    Ok(())
+                },
+            )?;
         }
 
         if let Some(lbl) = else_label {
-            self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| -> Result<(), CompileError> {
-                this.emit(Instr::Label(lbl));
-                Ok(())
-            })?;
+            self.with_ast_context(
+                ast_id,
+                Some(ControlFlowComponent::ControlFlowGlue),
+                |this| -> Result<(), CompileError> {
+                    this.emit(Instr::Label(lbl));
+                    Ok(())
+                },
+            )?;
             if let Some(blk) = else_blk {
-                self.with_parent_component(ControlFlowComponent::ElseBranch, |this| this.emit_block(blk))?;
+                self.with_parent_component(ControlFlowComponent::ElseBranch, |this| {
+                    this.emit_block(blk)
+                })?;
             }
         }
 
-        self.with_ast_context(ast_id, Some(ControlFlowComponent::ControlFlowGlue), |this| -> Result<(), CompileError> {
-            this.emit(Instr::Label(endif));
-            Ok(())
-        })?;
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Label(endif));
+                Ok(())
+            },
+        )?;
 
         Ok(())
     }
 
-    pub fn lower_while(&mut self, ast_id: AstNodeId, cond: &Expr, body: &[Stmt]) -> Result<(), CompileError> {
+    pub fn lower_while(
+        &mut self,
+        ast_id: AstNodeId,
+        cond: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), CompileError> {
         let start = self.new_label();
         let end = self.new_label();
 
-        self.emit(Instr::Label(start.clone()));
+        // Map the loop entry label to the while AST node
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Label(start.clone()));
+                Ok(())
+            },
+        )?;
 
         self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |this| {
             this.lower_condition_branch_false(cond, &end)
@@ -259,8 +324,23 @@ impl Gen {
 
         self.with_parent_component(ControlFlowComponent::LoopBody, |this| this.emit_block(body))?;
 
-        self.emit(Instr::Goto(start));
-        self.emit(Instr::Label(end));
+        // Back-edge and exit label are also attributed to the while node
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Goto(start.clone()));
+                Ok(())
+            },
+        )?;
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Label(end.clone()));
+                Ok(())
+            },
+        )?;
 
         Ok(())
     }
@@ -280,40 +360,79 @@ impl Gen {
         let var_v = self.get_var(var.to_string());
 
         // Initialize loop variable
-        let from_v = self.eval_as_value(from)?;
-        self.emit(Instr::Assign {
-            dst: var_v.clone(),
-            src: Rhs::Value(from_v),
-        });
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                let from_v = this.eval_as_value(from)?;
+                this.emit(Instr::Assign {
+                    dst: var_v.clone(),
+                    src: Rhs::Value(from_v),
+                });
+                Ok(())
+            },
+        )?;
 
-        self.emit(Instr::Label(start.clone()));
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Label(start.clone()));
+                Ok(())
+            },
+        )?;
 
         // Condition: var > to → exit (equivalent to !(var <= to))
         let to_v = self.eval_as_value(to)?;
-        self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |this| -> Result<(), CompileError> {
-            this.emit(Instr::IfCmpGoto {
-                left: Value::Var(var_v.clone()),
-                op: RelOp::Gt,
-                right: to_v,
-                target: end.clone(),
-            });
-            Ok(())
-        })?;
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::Condition),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::IfCmpGoto {
+                    left: Value::Var(var_v.clone()),
+                    op: RelOp::Gt,
+                    right: to_v,
+                    target: end.clone(),
+                });
+                Ok(())
+            },
+        )?;
 
         self.with_parent_component(ControlFlowComponent::LoopBody, |this| this.emit_block(body))?;
 
         // Increment
-        self.emit(Instr::Assign {
-            dst: var_v.clone(),
-            src: Rhs::Binary {
-                op: ArithOp::Add,
-                left: Value::Var(var_v),
-                right: Value::Imm(1),
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Assign {
+                    dst: var_v.clone(),
+                    src: Rhs::Binary {
+                        op: ArithOp::Add,
+                        left: Value::Var(var_v.clone()),
+                        right: Value::Imm(1),
+                    },
+                });
+                Ok(())
             },
-        });
+        )?;
 
-        self.emit(Instr::Goto(start));
-        self.emit(Instr::Label(end));
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Goto(start.clone()));
+                Ok(())
+            },
+        )?;
+        self.with_ast_context(
+            ast_id,
+            Some(ControlFlowComponent::ControlFlowGlue),
+            |this| -> Result<(), CompileError> {
+                this.emit(Instr::Label(end.clone()));
+                Ok(())
+            },
+        )?;
 
         Ok(())
     }
@@ -325,7 +444,13 @@ impl Gen {
         Ok(())
     }
 
-    pub fn lower_function(&mut self, ast_id: AstNodeId, name: &str, params: &[String], body: &[Stmt]) -> Result<(), CompileError> {
+    pub fn lower_function(
+        &mut self,
+        ast_id: AstNodeId,
+        name: &str,
+        params: &[String],
+        body: &[Stmt],
+    ) -> Result<(), CompileError> {
         self.with_ast_context(ast_id, None, |this| {
             this.emit(Instr::FuncStart {
                 name: name.to_string(),
