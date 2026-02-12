@@ -1,6 +1,6 @@
 use super::super::abi::Register;
 use super::super::regalloc::{GreedyRegAllocator, RegAllocator};
-use super::item::{AsmItem, Disp, S16Instr};
+use super::item::{AnnotatedInstr, AsmItem, Disp, S16Instr};
 use crate::ir::{Value, Var};
 use std::collections::HashSet;
 
@@ -73,6 +73,17 @@ impl Codegen {
     pub fn push_asm(&mut self, instr: S16Instr) {
         let item = AsmItem::Instr {
             instr,
+            comment: None,
+            ir_map: self.current_ir,
+        };
+        self.push_item(item);
+    }
+
+    /// Push a typed machine instruction with a comment into the current buffer.
+    pub fn push_commented(&mut self, instr: S16Instr, comment: impl Into<String>) {
+        let item = AsmItem::Instr {
+            instr,
+            comment: Some(comment.into()),
             ir_map: self.current_ir,
         };
         self.push_item(item);
@@ -96,10 +107,49 @@ impl Codegen {
         }
     }
 
+    /// Number of items in the current output buffer.
+    pub fn current_buf_len(&self) -> usize {
+        if let Some(buf) = &self.func_buf {
+            buf.len()
+        } else if let Some(buf) = &self.top_level_buf {
+            buf.len()
+        } else {
+            0
+        }
+    }
+
+    /// Retroactively set the comment on the last instruction in the current
+    /// buffer that writes to `reg`.
+    pub fn annotate_last_write(&mut self, reg: Register, comment: String) {
+        let buf = if let Some(ref mut buf) = self.func_buf {
+            buf
+        } else if let Some(ref mut buf) = self.top_level_buf {
+            buf
+        } else {
+            return;
+        };
+        for item in buf.iter_mut().rev() {
+            if let AsmItem::Instr {
+                instr, comment: c, ..
+            } = item
+            {
+                if instr.dest_reg() == Some(reg) {
+                    *c = Some(comment);
+                    return;
+                }
+            }
+        }
+    }
+
     /// Drain regalloc-emitted instructions into the current buffer.
-    pub fn drain_regalloc(&mut self, instrs: Vec<S16Instr>) {
-        for instr in instrs {
-            self.push_asm(instr);
+    pub fn drain_regalloc(&mut self, instrs: Vec<AnnotatedInstr>) {
+        for (instr, comment) in instrs {
+            let item = AsmItem::Instr {
+                instr,
+                comment,
+                ir_map: self.current_ir,
+            };
+            self.push_item(item);
         }
     }
 
@@ -131,6 +181,7 @@ impl Codegen {
                         disp: Disp::Num(max_slots as i64),
                         idx: Register::STACK_PTR,
                     },
+                    comment: Some(format!("alloc toplevel frame ({})", max_slots)),
                     ir_map: None,
                 });
             }
@@ -144,6 +195,7 @@ impl Codegen {
                         disp: Disp::Num(-(max_slots as i64)),
                         idx: Register::STACK_PTR,
                     },
+                    comment: Some("dealloc toplevel frame".into()),
                     ir_map: None,
                 });
             }
@@ -207,6 +259,7 @@ impl Codegen {
         let total_frame = frame + 1;
         prologue.push(AsmItem::Instr {
             instr: S16Instr::store_disp(Register::LINK_REG, 0, Register::STACK_PTR),
+            comment: Some("save return addr".into()),
             ir_map: func_start_ir,
         });
 
@@ -217,6 +270,7 @@ impl Codegen {
                 disp: Disp::Num(total_frame as i64),
                 idx: Register::STACK_PTR,
             },
+            comment: Some(format!("allocate frame ({})", total_frame)),
             ir_map: func_start_ir,
         });
 
@@ -225,6 +279,7 @@ impl Codegen {
             let disp = -(max_slots as i64) - 1 - i as i64;
             prologue.push(AsmItem::Instr {
                 instr: S16Instr::store_disp(reg, disp, Register::STACK_PTR),
+                comment: Some(format!("save {}", reg)),
                 ir_map: func_start_ir,
             });
         }
@@ -238,6 +293,7 @@ impl Codegen {
             let disp = -(max_slots as i64) - 1 - i as i64;
             epilogue.push(AsmItem::Instr {
                 instr: S16Instr::load_disp(reg, disp, Register::STACK_PTR),
+                comment: Some(format!("restore {}", reg)),
                 ir_map: func_end_ir,
             });
         }
@@ -249,12 +305,14 @@ impl Codegen {
                 disp: Disp::Num(-(total_frame as i64)),
                 idx: Register::STACK_PTR,
             },
+            comment: Some("deallocate frame".into()),
             ir_map: func_end_ir,
         });
 
         // Restore return address
         epilogue.push(AsmItem::Instr {
             instr: S16Instr::load_disp(Register::LINK_REG, 0, Register::STACK_PTR),
+            comment: Some("restore return addr".into()),
             ir_map: func_end_ir,
         });
 
@@ -264,6 +322,7 @@ impl Codegen {
                 disp: Disp::Num(0),
                 idx: Register::LINK_REG,
             },
+            comment: Some("return".into()),
             ir_map: func_end_ir,
         });
 
@@ -340,6 +399,7 @@ impl Codegen {
             // Stack pointer setup
             final_out.push(AsmItem::Instr {
                 instr: S16Instr::lea_label(Register::STACK_PTR, "stack"),
+                comment: Some("init stack ptr".into()),
                 ir_map: None,
             });
 
@@ -349,6 +409,7 @@ impl Codegen {
             // Halt
             final_out.push(AsmItem::Instr {
                 instr: S16Instr::trap_halt(),
+                comment: Some("halt".into()),
                 ir_map: None,
             });
 
@@ -421,8 +482,29 @@ impl Codegen {
                     lines.push(name.clone());
                     mapping.push(*ir_map);
                 }
-                AsmItem::Instr { instr, ir_map } => {
-                    lines.push(instr.to_string());
+                AsmItem::Instr {
+                    instr,
+                    comment,
+                    ir_map,
+                } => {
+                    let base = instr.to_string();
+                    let line = if let Some(c) = comment {
+                        // Align comments to a fixed column for readability.
+                        // Instructions are indented by 2 spaces, so typical
+                        // widths are 14–25 chars. Column 30 keeps most
+                        // comments neatly aligned while accommodating longer
+                        // instructions gracefully.
+                        const COMMENT_COL: usize = 30;
+                        let pad = if base.len() < COMMENT_COL {
+                            COMMENT_COL - base.len()
+                        } else {
+                            2 // minimum gap
+                        };
+                        format!("{}{}; {}", base, " ".repeat(pad), c)
+                    } else {
+                        base
+                    };
+                    lines.push(line);
                     mapping.push(*ir_map);
                 }
                 AsmItem::Function {

@@ -1,40 +1,46 @@
 use super::abi::Register;
-use super::codegen::item::S16Instr;
+use super::codegen::item::{AnnotatedInstr, S16Instr};
 use super::liveness::LivenessInfo;
 use crate::ir::{Value, Var};
 use std::collections::{HashMap, HashSet};
+
+/// Push an instruction with a comment.
+#[inline]
+fn emit_c(out: &mut Vec<AnnotatedInstr>, instr: S16Instr, comment: impl Into<String>) {
+    out.push((instr, Some(comment.into())));
+}
 
 pub trait RegAllocator {
     fn bind_var_to_reg(&mut self, var: Var, reg: Register);
     fn mark_dirty(&mut self, var: &Var);
     fn clear_temp_busy(&mut self);
-    fn spill_reg(&mut self, reg: Register, out: &mut Vec<S16Instr>);
-    fn allocate_reg(&mut self, out: &mut Vec<S16Instr>) -> Register;
+    fn spill_reg(&mut self, reg: Register, out: &mut Vec<AnnotatedInstr>);
+    fn allocate_reg(&mut self, out: &mut Vec<AnnotatedInstr>) -> Register;
     fn ensure_in_reg(
         &mut self,
         v: &Value,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool);
     fn ensure_var_in_reg(
         &mut self,
         var: &Var,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
         prefer_reg: Option<Register>,
     ) -> Register;
     fn get_var_reg(&self, var: &Var) -> Option<Register>;
     fn free_reg(&mut self, r: Register);
-    fn spill_caller_saved(&mut self, out: &mut Vec<S16Instr>);
-    fn flush_all(&mut self, out: &mut Vec<S16Instr>);
-    fn flush_globals(&mut self, out: &mut Vec<S16Instr>);
+    fn spill_caller_saved(&mut self, out: &mut Vec<AnnotatedInstr>);
+    fn flush_all(&mut self, out: &mut Vec<AnnotatedInstr>);
+    fn flush_globals(&mut self, out: &mut Vec<AnnotatedInstr>);
     fn begin_region(&mut self);
     fn get_max_slots(&self) -> usize;
 
     // --- Extended methods with defaults for backward compatibility ---
 
     /// Write only dirty variables to their home locations, keep register bindings.
-    fn flush_dirty(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_dirty(&mut self, out: &mut Vec<AnnotatedInstr>) {
         // Default: fall back to flush_all (which also clears bindings)
         self.flush_all(out);
     }
@@ -49,7 +55,7 @@ pub trait RegAllocator {
     fn prepare_def_reg(
         &mut self,
         var: &Var,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
     ) -> Register {
         // Default: fall back to ensure_var_in_reg (may emit unnecessary load)
@@ -170,7 +176,7 @@ impl RegAllocator for GreedyRegAllocator {
         self.temp_busy.clear();
     }
 
-    fn spill_reg(&mut self, reg: Register, out: &mut Vec<S16Instr>) {
+    fn spill_reg(&mut self, reg: Register, out: &mut Vec<AnnotatedInstr>) {
         if let Some(var) = self.reg_to_var.remove(&reg) {
             self.var_to_reg.remove(&var);
             let is_dirty = self.dirty.remove(&var);
@@ -182,9 +188,17 @@ impl RegAllocator for GreedyRegAllocator {
                     self.next_slot
                 });
                 let offset = -(slot as i64);
-                out.push(S16Instr::store_disp(reg, offset, Register::STACK_PTR));
+                emit_c(
+                    out,
+                    S16Instr::store_disp(reg, offset, Register::STACK_PTR),
+                    format!("spill {}", var.name),
+                );
             } else if is_dirty {
-                out.push(S16Instr::store_label(reg, &var.name));
+                emit_c(
+                    out,
+                    S16Instr::store_label(reg, &var.name),
+                    format!("writeback {}", var.name),
+                );
             }
         }
         if let Some(pos) = self.usage_order.iter().position(|&r| r == reg) {
@@ -192,7 +206,7 @@ impl RegAllocator for GreedyRegAllocator {
         }
     }
 
-    fn allocate_reg(&mut self, out: &mut Vec<S16Instr>) -> Register {
+    fn allocate_reg(&mut self, out: &mut Vec<AnnotatedInstr>) -> Register {
         for &r in &Register::GP_REGS {
             if !self.reg_to_var.contains_key(&r) && !self.temp_busy.contains(&r) {
                 self.touch(r);
@@ -210,7 +224,7 @@ impl RegAllocator for GreedyRegAllocator {
     fn ensure_in_reg(
         &mut self,
         v: &Value,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool) {
         match v {
@@ -220,7 +234,7 @@ impl RegAllocator for GreedyRegAllocator {
             }
             Value::Imm(i) => {
                 let r = self.allocate_reg(out);
-                out.push(S16Instr::lea_imm(r, *i));
+                out.push((S16Instr::lea_imm(r, *i), None));
                 (r, true)
             }
             Value::Var(var) => {
@@ -233,11 +247,19 @@ impl RegAllocator for GreedyRegAllocator {
                     if var.is_reg_allocated() {
                         if let Some(&slot) = self.spilled.get(var) {
                             let offset = -(slot as i64);
-                            out.push(S16Instr::load_disp(r, offset, Register::STACK_PTR));
+                            emit_c(
+                                out,
+                                S16Instr::load_disp(r, offset, Register::STACK_PTR),
+                                format!("restore {}", var.name),
+                            );
                         }
                     } else {
                         note_user(&var.name);
-                        out.push(S16Instr::load_label(r, &var.name));
+                        emit_c(
+                            out,
+                            S16Instr::load_label(r, &var.name),
+                            format!("load {}", var.name),
+                        );
                     }
                     self.bind_var_to_reg(var.clone(), r);
                     self.temp_busy.insert(r);
@@ -247,7 +269,11 @@ impl RegAllocator for GreedyRegAllocator {
             Value::AddrOf(name) => {
                 note_user(name);
                 let r = self.allocate_reg(out);
-                out.push(S16Instr::lea_label(r, name.as_str()));
+                emit_c(
+                    out,
+                    S16Instr::lea_label(r, name.as_str()),
+                    format!("&{}", name),
+                );
                 self.temp_busy.insert(r);
                 (r, true)
             }
@@ -257,7 +283,7 @@ impl RegAllocator for GreedyRegAllocator {
     fn ensure_var_in_reg(
         &mut self,
         var: &Var,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
         prefer_reg: Option<Register>,
     ) -> Register {
@@ -282,11 +308,19 @@ impl RegAllocator for GreedyRegAllocator {
         if var.is_reg_allocated() {
             if let Some(&slot) = self.spilled.get(var) {
                 let offset = -(slot as i64);
-                out.push(S16Instr::load_disp(r, offset, Register::STACK_PTR));
+                emit_c(
+                    out,
+                    S16Instr::load_disp(r, offset, Register::STACK_PTR),
+                    format!("restore {}", var.name),
+                );
             }
         } else {
             note_user(&var.name);
-            out.push(S16Instr::load_label(r, &var.name));
+            emit_c(
+                out,
+                S16Instr::load_label(r, &var.name),
+                format!("load {}", var.name),
+            );
         }
 
         self.bind_var_to_reg(var.clone(), r);
@@ -308,7 +342,7 @@ impl RegAllocator for GreedyRegAllocator {
         }
     }
 
-    fn spill_caller_saved(&mut self, out: &mut Vec<S16Instr>) {
+    fn spill_caller_saved(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs_to_spill: Vec<Register> = self
             .reg_to_var
             .keys()
@@ -320,14 +354,14 @@ impl RegAllocator for GreedyRegAllocator {
         }
     }
 
-    fn flush_all(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_all(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs: Vec<Register> = self.reg_to_var.keys().copied().collect();
         for r in regs {
             self.spill_reg(r, out);
         }
     }
 
-    fn flush_globals(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_globals(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs: Vec<Register> = self
             .reg_to_var
             .iter()
@@ -467,7 +501,7 @@ impl AdvancedRegAllocator {
     }
 
     /// Write a single variable to its home location.
-    fn write_back(&mut self, reg: Register, var: &Var, out: &mut Vec<S16Instr>) {
+    fn write_back(&mut self, reg: Register, var: &Var, out: &mut Vec<AnnotatedInstr>) {
         if var.is_reg_allocated() {
             let slot = *self.spilled.entry(var.clone()).or_insert_with(|| {
                 self.next_slot += 1;
@@ -475,10 +509,18 @@ impl AdvancedRegAllocator {
                 self.next_slot
             });
             let offset = -(slot as i64);
-            out.push(S16Instr::store_disp(reg, offset, Register::STACK_PTR));
+            emit_c(
+                out,
+                S16Instr::store_disp(reg, offset, Register::STACK_PTR),
+                format!("spill {}", var.name),
+            );
         } else {
             // Global
-            out.push(S16Instr::store_label(reg, &var.name));
+            emit_c(
+                out,
+                S16Instr::store_label(reg, &var.name),
+                format!("writeback {}", var.name),
+            );
         }
     }
 }
@@ -506,7 +548,7 @@ impl RegAllocator for AdvancedRegAllocator {
         self.temp_busy.clear();
     }
 
-    fn spill_reg(&mut self, reg: Register, out: &mut Vec<S16Instr>) {
+    fn spill_reg(&mut self, reg: Register, out: &mut Vec<AnnotatedInstr>) {
         if let Some(var) = self.reg_to_var.remove(&reg) {
             self.var_to_reg.remove(&var);
             let is_dirty = self.dirty.remove(&var);
@@ -525,16 +567,24 @@ impl RegAllocator for AdvancedRegAllocator {
                         self.next_slot
                     });
                     let offset = -(slot as i64);
-                    out.push(S16Instr::store_disp(reg, offset, Register::STACK_PTR));
+                    emit_c(
+                        out,
+                        S16Instr::store_disp(reg, offset, Register::STACK_PTR),
+                        format!("spill {}", var.name),
+                    );
                 }
             } else if is_dirty {
                 // Global: only write if dirty
-                out.push(S16Instr::store_label(reg, &var.name));
+                emit_c(
+                    out,
+                    S16Instr::store_label(reg, &var.name),
+                    format!("writeback {}", var.name),
+                );
             }
         }
     }
 
-    fn allocate_reg(&mut self, out: &mut Vec<S16Instr>) -> Register {
+    fn allocate_reg(&mut self, out: &mut Vec<AnnotatedInstr>) -> Register {
         // 1. Find a free register (skip reserved registers in register-resident mode)
         for &r in &Register::GP_REGS {
             if !self.reg_to_var.contains_key(&r)
@@ -556,7 +606,7 @@ impl RegAllocator for AdvancedRegAllocator {
     fn ensure_in_reg(
         &mut self,
         v: &Value,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
     ) -> (Register, bool) {
         match v {
@@ -566,7 +616,7 @@ impl RegAllocator for AdvancedRegAllocator {
             }
             Value::Imm(i) => {
                 let r = self.allocate_reg(out);
-                out.push(S16Instr::lea_imm(r, *i));
+                out.push((S16Instr::lea_imm(r, *i), None));
                 (r, true)
             }
             Value::Var(var) => {
@@ -578,11 +628,19 @@ impl RegAllocator for AdvancedRegAllocator {
                     if var.is_reg_allocated() {
                         if let Some(&slot) = self.spilled.get(var) {
                             let offset = -(slot as i64);
-                            out.push(S16Instr::load_disp(r, offset, Register::STACK_PTR));
+                            emit_c(
+                                out,
+                                S16Instr::load_disp(r, offset, Register::STACK_PTR),
+                                format!("restore {}", var.name),
+                            );
                         }
                     } else {
                         note_user(&var.name);
-                        out.push(S16Instr::load_label(r, &var.name));
+                        emit_c(
+                            out,
+                            S16Instr::load_label(r, &var.name),
+                            format!("load {}", var.name),
+                        );
                     }
                     self.bind_var_to_reg(var.clone(), r);
                     self.temp_busy.insert(r);
@@ -592,7 +650,11 @@ impl RegAllocator for AdvancedRegAllocator {
             Value::AddrOf(name) => {
                 note_user(name);
                 let r = self.allocate_reg(out);
-                out.push(S16Instr::lea_label(r, name.as_str()));
+                emit_c(
+                    out,
+                    S16Instr::lea_label(r, name.as_str()),
+                    format!("&{}", name),
+                );
                 self.temp_busy.insert(r);
                 (r, true)
             }
@@ -602,7 +664,7 @@ impl RegAllocator for AdvancedRegAllocator {
     fn ensure_var_in_reg(
         &mut self,
         var: &Var,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         note_user: &mut dyn FnMut(&str),
         prefer_reg: Option<Register>,
     ) -> Register {
@@ -641,11 +703,19 @@ impl RegAllocator for AdvancedRegAllocator {
         if var.is_reg_allocated() {
             if let Some(&slot) = self.spilled.get(var) {
                 let offset = -(slot as i64);
-                out.push(S16Instr::load_disp(r, offset, Register::STACK_PTR));
+                emit_c(
+                    out,
+                    S16Instr::load_disp(r, offset, Register::STACK_PTR),
+                    format!("restore {}", var.name),
+                );
             }
         } else {
             note_user(&var.name);
-            out.push(S16Instr::load_label(r, &var.name));
+            emit_c(
+                out,
+                S16Instr::load_label(r, &var.name),
+                format!("load {}", var.name),
+            );
         }
 
         self.bind_var_to_reg(var.clone(), r);
@@ -664,7 +734,7 @@ impl RegAllocator for AdvancedRegAllocator {
         }
     }
 
-    fn spill_caller_saved(&mut self, out: &mut Vec<S16Instr>) {
+    fn spill_caller_saved(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs_to_spill: Vec<Register> = self
             .reg_to_var
             .iter()
@@ -690,14 +760,14 @@ impl RegAllocator for AdvancedRegAllocator {
         }
     }
 
-    fn flush_all(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_all(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs: Vec<Register> = self.reg_to_var.keys().copied().collect();
         for r in regs {
             self.spill_reg(r, out);
         }
     }
 
-    fn flush_globals(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_globals(&mut self, out: &mut Vec<AnnotatedInstr>) {
         let regs: Vec<Register> = self
             .reg_to_var
             .iter()
@@ -733,7 +803,7 @@ impl RegAllocator for AdvancedRegAllocator {
 
     // --- Advanced methods ---
 
-    fn flush_dirty(&mut self, out: &mut Vec<S16Instr>) {
+    fn flush_dirty(&mut self, out: &mut Vec<AnnotatedInstr>) {
         if self.register_resident {
             // In register-resident mode, register-allocated variables live
             // permanently in registers — no need to write them to memory
@@ -787,7 +857,7 @@ impl RegAllocator for AdvancedRegAllocator {
     fn prepare_def_reg(
         &mut self,
         var: &Var,
-        out: &mut Vec<S16Instr>,
+        out: &mut Vec<AnnotatedInstr>,
         _note_user: &mut dyn FnMut(&str),
     ) -> Register {
         // If var is already in a register, reuse it (no load needed)
