@@ -136,12 +136,26 @@ impl Codegen {
                         // Optimization: if the source is a temporary (from an
                         // immediate) or a dead variable, rebind its register
                         // directly to the destination — no copy needed.
-                        let can_rebind = if free_s {
-                            true
-                        } else if let Value::Var(src_var) = v {
-                            src_var != dst && self.reg.is_var_dead(src_var)
-                        } else {
-                            false
+                        //
+                        // In register-resident mode, only rebind if the source
+                        // register matches the destination's fixed register.
+                        // Otherwise we'd violate the fixed assignment and
+                        // produce incorrect code in loops.
+                        let fixed_dst = self.reg.get_fixed_reg(dst);
+                        let can_rebind = {
+                            let base = if free_s {
+                                true
+                            } else if let Value::Var(src_var) = v {
+                                src_var != dst && self.reg.is_var_dead(src_var)
+                            } else {
+                                false
+                            };
+                            // In register-resident mode, only rebind when the
+                            // source register IS the fixed register for dst.
+                            base && match fixed_dst {
+                                Some(fr) => rs == fr,
+                                None => true,
+                            }
                         };
 
                         if can_rebind {
@@ -332,12 +346,23 @@ impl Codegen {
                 }
             }
             Instr::Call { func, args, ret } => {
-                // Step 1: Evaluate all arguments into registers first.
-                // This pins them as temp_busy so they survive spilling.
-                let mut arg_info: Vec<(Register, bool)> = Vec::new();
+                // Step 1: Evaluate arguments into registers.
+                // Non-zero immediates are deferred so they can be loaded
+                // directly into their target parameter register after
+                // caller-saved registers are spilled, avoiding an
+                // unnecessary temp register + move.
+                let mut arg_info: Vec<Option<(Register, bool)>> = Vec::new();
                 for a in args.iter().take(8) {
-                    let (ra, free_a) = self.ensure_in_reg(a);
-                    arg_info.push((ra, free_a));
+                    match a {
+                        Value::Imm(i) if *i != 0 => {
+                            // Defer: will load directly into param reg
+                            arg_info.push(None);
+                        }
+                        _ => {
+                            let (ra, free_a) = self.ensure_in_reg(a);
+                            arg_info.push(Some((ra, free_a)));
+                        }
+                    }
                 }
 
                 // Step 2: Spill caller-saved registers that need saving
@@ -348,14 +373,24 @@ impl Codegen {
                 self.reg.spill_caller_saved(&mut spill_out);
                 self.drain_regalloc(spill_out);
 
-                // Step 3: Move evaluated args into parameter registers.
-                for (i, &(ra, free_a)) in arg_info.iter().enumerate() {
+                // Step 3: Place arguments into parameter registers.
+                for (i, evaluated) in arg_info.iter().enumerate() {
                     let target_r = Register::PARAM_REGS[i];
-                    if ra != target_r {
-                        self.push_asm(S16Instr::mov(target_r, ra));
-                    }
-                    if free_a {
-                        self.reg.free_reg(ra);
+                    match evaluated {
+                        Some((ra, free_a)) => {
+                            if *ra != target_r {
+                                self.push_asm(S16Instr::mov(target_r, *ra));
+                            }
+                            if *free_a {
+                                self.reg.free_reg(*ra);
+                            }
+                        }
+                        None => {
+                            // Deferred non-zero immediate
+                            if let Value::Imm(imm) = &args[i] {
+                                self.push_asm(S16Instr::lea_imm(target_r, *imm));
+                            }
+                        }
                     }
                 }
 

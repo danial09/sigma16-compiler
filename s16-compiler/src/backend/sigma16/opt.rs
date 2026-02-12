@@ -115,7 +115,8 @@ impl AsmPass for PrologueEpilogueOptimizer {
                     // 3. load R13, 0[R14]
                     // 4. jump 0[R13]
 
-                    // We want to keep only the final jump 0[R13].
+                    // We want to keep the epilogue label (for early returns)
+                    // and the final jump 0[R13], discarding everything else.
                     if let Some(jump_item) = epilogue.last().cloned() {
                         if let AsmItem::Instr {
                             instr:
@@ -126,7 +127,14 @@ impl AsmPass for PrologueEpilogueOptimizer {
                             ..
                         } = &jump_item
                         {
+                            // Collect leading labels (e.g. ret_funcname)
+                            let labels: Vec<AsmItem> = epilogue
+                                .iter()
+                                .take_while(|it| matches!(it, AsmItem::Label(..)))
+                                .cloned()
+                                .collect();
                             epilogue.clear();
+                            epilogue.extend(labels);
                             epilogue.push(jump_item);
                         }
                     }
