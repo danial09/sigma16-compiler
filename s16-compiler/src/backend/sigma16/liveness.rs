@@ -14,6 +14,10 @@ pub struct LivenessInfo {
     live_after: Vec<HashSet<Var>>,
     /// Offset of the region start in the global instruction list.
     offset: usize,
+    /// For each instruction index (relative to region start), maps each live
+    /// variable to the global index of its next use. Variables not present
+    /// have no subsequent use in the region.
+    next_use: Vec<HashMap<Var, usize>>,
 }
 
 impl LivenessInfo {
@@ -22,6 +26,20 @@ impl LivenessInfo {
         match idx.checked_sub(self.offset) {
             Some(i) => self.live_after.get(i).map_or(true, |s| s.contains(var)),
             None => true,
+        }
+    }
+
+    /// Return the global index of the next use of `var` strictly after
+    /// instruction `idx`. Returns `usize::MAX` if there is no subsequent use.
+    pub fn next_use_after(&self, idx: usize, var: &Var) -> usize {
+        match idx.checked_sub(self.offset) {
+            Some(i) => self
+                .next_use
+                .get(i)
+                .and_then(|m| m.get(var))
+                .copied()
+                .unwrap_or(usize::MAX),
+            None => 0, // conservative: assume immediate use
         }
     }
 }
@@ -98,6 +116,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         return LivenessInfo {
             live_after: Vec::new(),
             offset: start,
+            next_use: Vec::new(),
         };
     }
 
@@ -250,8 +269,30 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         }
     }
 
+    // Step 6: Compute per-instruction next-use distances.
+    //
+    // next_use_vec[i][var] = global index of the first instruction > i that
+    // reads `var`.  We scan backwards: when we encounter a use of `var` at
+    // position i, we record i (global) as the upcoming use for all earlier
+    // positions.
+    let mut next_use_vec: Vec<HashMap<Var, usize>> = vec![HashMap::new(); n];
+    let mut upcoming: HashMap<Var, usize> = HashMap::new();
+
+    for i in (0..n).rev() {
+        // Snapshot: for position i, next-use is whatever we've accumulated
+        // from positions > i.
+        next_use_vec[i] = upcoming.clone();
+
+        // Now record that position i uses these variables, so any position
+        // < i will see this as the nearest upcoming use.
+        for var in get_uses(&region[i]) {
+            upcoming.insert(var, i + start);
+        }
+    }
+
     LivenessInfo {
         live_after: live_after_vec,
         offset: start,
+        next_use: next_use_vec,
     }
 }

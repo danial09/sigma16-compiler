@@ -67,6 +67,24 @@ pub trait RegAllocator {
 
     /// Update the current instruction index (global).
     fn set_current_instruction(&mut self, _idx: usize) {}
+
+    /// Enable register-resident mode with fixed variable-to-register assignments.
+    /// When active, `flush_dirty` and `clear_bindings` become no-ops for
+    /// register-allocated variables, and variables always occupy their
+    /// assigned register.
+    fn set_register_resident(&mut self, _assignments: HashMap<Var, Register>) {}
+
+    /// Whether the allocator is currently in register-resident mode.
+    #[allow(dead_code)]
+    fn is_register_resident(&self) -> bool {
+        false
+    }
+
+    /// Return the fixed register assignment for a variable, if any.
+    /// Only meaningful in register-resident mode.
+    fn get_fixed_reg(&self, _var: &Var) -> Option<Register> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -353,6 +371,13 @@ pub struct AdvancedRegAllocator {
     liveness: Option<LivenessInfo>,
     /// Current global instruction index
     current_idx: usize,
+    /// Fixed variable → register assignments (register-resident mode)
+    fixed_assignments: HashMap<Var, Register>,
+    /// Whether register-resident mode is active
+    register_resident: bool,
+    /// Registers reserved for fixed-assignment variables (not available for
+    /// temporary allocation)
+    reserved_regs: HashSet<Register>,
 }
 
 impl AdvancedRegAllocator {
@@ -367,6 +392,9 @@ impl AdvancedRegAllocator {
             max_slots: 0,
             liveness: None,
             current_idx: 0,
+            fixed_assignments: HashMap::new(),
+            register_resident: false,
+            reserved_regs: HashSet::new(),
         }
     }
 
@@ -382,17 +410,20 @@ impl AdvancedRegAllocator {
         }
     }
 
-    /// Find the best register to spill. Prefers:
-    /// 1. Registers holding dead variables (no store needed)
+    /// Find the best register to spill. Strategy:
+    /// 1. Registers holding dead variables (free eviction, no store)
     /// 2. Among live variables, pick the one with the farthest next-use
-    ///    (approximated by preferring caller-saved, then LRU-like)
+    ///    (Belady's optimal algorithm) so the evicted value is needed latest.
     fn find_spill_victim(&self) -> Register {
         let mut best_dead: Option<Register> = None;
-        let mut best_live: Option<Register> = None;
-        let mut best_live_is_caller = false;
+        let mut best_live: Option<(Register, usize)> = None; // (reg, next_use_distance)
 
         for (&reg, var) in &self.reg_to_var {
             if self.temp_busy.contains(&reg) {
+                continue;
+            }
+            // Never evict a register-resident variable
+            if self.register_resident && self.reserved_regs.contains(&reg) {
                 continue;
             }
 
@@ -403,22 +434,36 @@ impl AdvancedRegAllocator {
                     best_dead = Some(reg);
                 }
             } else {
-                // Live variable: use heuristic
-                let is_caller = Register::CALLER_SAVED.contains(&reg);
-                if best_live.is_none()
-                    || (is_caller && !best_live_is_caller)
-                    || (is_caller == best_live_is_caller)
-                {
-                    best_live = Some(reg);
-                    best_live_is_caller = is_caller;
+                // Live variable: use next-use distance (Belady's)
+                let dist = self
+                    .liveness
+                    .as_ref()
+                    .map(|info| info.next_use_after(self.current_idx, var))
+                    .unwrap_or(0); // conservative: assume immediate use
+
+                let is_better = match best_live {
+                    None => true,
+                    Some((_, best_dist)) => {
+                        // Prefer the variable used farthest in the future
+                        if dist != best_dist {
+                            dist > best_dist
+                        } else {
+                            // Tie-break: prefer caller-saved (cheaper convention)
+                            Register::CALLER_SAVED.contains(&reg)
+                        }
+                    }
+                };
+
+                if is_better {
+                    best_live = Some((reg, dist));
                 }
             }
         }
 
         // Prefer dead variables (cheapest to evict)
         best_dead
-            .or(best_live)
-            .expect("No registers to spill (all are temp busy)")
+            .or(best_live.map(|(r, _)| r))
+            .expect("No registers to spill (all are temp busy or reserved)")
     }
 
     /// Write a single variable to its home location.
@@ -490,9 +535,12 @@ impl RegAllocator for AdvancedRegAllocator {
     }
 
     fn allocate_reg(&mut self, out: &mut Vec<S16Instr>) -> Register {
-        // 1. Find a free register
+        // 1. Find a free register (skip reserved registers in register-resident mode)
         for &r in &Register::GP_REGS {
-            if !self.reg_to_var.contains_key(&r) && !self.temp_busy.contains(&r) {
+            if !self.reg_to_var.contains_key(&r)
+                && !self.temp_busy.contains(&r)
+                && !self.reserved_regs.contains(&r)
+            {
                 self.temp_busy.insert(r);
                 return r;
             }
@@ -558,13 +606,29 @@ impl RegAllocator for AdvancedRegAllocator {
         note_user: &mut dyn FnMut(&str),
         prefer_reg: Option<Register>,
     ) -> Register {
+        // Already in a register?
         if let Some(&r) = self.var_to_reg.get(var) {
             self.temp_busy.insert(r);
             return r;
         }
 
-        let r = if let Some(pref) = prefer_reg {
-            if !self.reg_to_var.contains_key(&pref) && !self.temp_busy.contains(&pref) {
+        // In register-resident mode, use the fixed assignment register.
+        let r = if let Some(&fixed_r) = self.fixed_assignments.get(var) {
+            // The fixed register might be occupied by another variable
+            // (e.g. after a call clobbered it and something else took it).
+            // Evict the occupant if necessary.
+            if let Some(occupant) = self.reg_to_var.get(&fixed_r).cloned() {
+                if occupant != *var {
+                    self.spill_reg(fixed_r, out);
+                }
+            }
+            self.temp_busy.insert(fixed_r);
+            fixed_r
+        } else if let Some(pref) = prefer_reg {
+            if !self.reg_to_var.contains_key(&pref)
+                && !self.temp_busy.contains(&pref)
+                && !self.reserved_regs.contains(&pref)
+            {
                 self.temp_busy.insert(pref);
                 pref
             } else {
@@ -654,6 +718,9 @@ impl RegAllocator for AdvancedRegAllocator {
         self.max_slots = 0;
         self.liveness = None;
         self.current_idx = 0;
+        self.fixed_assignments.clear();
+        self.register_resident = false;
+        self.reserved_regs.clear();
     }
 
     fn get_max_slots(&self) -> usize {
@@ -667,11 +734,26 @@ impl RegAllocator for AdvancedRegAllocator {
     // --- Advanced methods ---
 
     fn flush_dirty(&mut self, out: &mut Vec<S16Instr>) {
-        // Collect variables that need writing:
-        // 1. Dirty variables (modified since last write-back)
-        // 2. Register-allocated variables with no spill slot yet
-        //    (their value exists only in the register and would be
-        //    irrecoverable after clear_bindings)
+        if self.register_resident {
+            // In register-resident mode, register-allocated variables live
+            // permanently in registers — no need to write them to memory
+            // at branch points. Only flush dirty globals (they have
+            // memory-backed homes that must stay in sync).
+            let global_entries: Vec<(Register, Var)> = self
+                .reg_to_var
+                .iter()
+                .filter(|(_, var)| var.is_global() && self.dirty.contains(*var))
+                .map(|(&r, v)| (r, v.clone()))
+                .collect();
+
+            for (reg, var) in global_entries {
+                self.write_back(reg, &var, out);
+                self.dirty.remove(&var);
+            }
+            return;
+        }
+
+        // Non-resident path: write all dirty or un-spilled variables.
         let entries: Vec<(Register, Var)> = self
             .reg_to_var
             .iter()
@@ -692,6 +774,11 @@ impl RegAllocator for AdvancedRegAllocator {
     }
 
     fn clear_bindings(&mut self) {
+        if self.register_resident {
+            // In register-resident mode, keep all bindings intact.
+            // Variables live permanently in their assigned registers.
+            return;
+        }
         self.var_to_reg.clear();
         self.reg_to_var.clear();
         self.dirty.clear();
@@ -708,6 +795,15 @@ impl RegAllocator for AdvancedRegAllocator {
             self.temp_busy.insert(r);
             return r;
         }
+        // In register-resident mode, use the fixed assignment register.
+        if let Some(&fixed_r) = self.fixed_assignments.get(var) {
+            // Evict any current occupant of the fixed register.
+            if self.reg_to_var.contains_key(&fixed_r) {
+                self.spill_reg(fixed_r, out);
+            }
+            self.temp_busy.insert(fixed_r);
+            return fixed_r;
+        }
         // Otherwise allocate a fresh register - do NOT load old value
         self.allocate_reg(out)
     }
@@ -718,5 +814,19 @@ impl RegAllocator for AdvancedRegAllocator {
 
     fn set_current_instruction(&mut self, idx: usize) {
         self.current_idx = idx;
+    }
+
+    fn set_register_resident(&mut self, assignments: HashMap<Var, Register>) {
+        self.register_resident = true;
+        self.reserved_regs = assignments.values().copied().collect();
+        self.fixed_assignments = assignments;
+    }
+
+    fn is_register_resident(&self) -> bool {
+        self.register_resident
+    }
+
+    fn get_fixed_reg(&self, var: &Var) -> Option<Register> {
+        self.fixed_assignments.get(var).copied()
     }
 }
