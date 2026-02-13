@@ -259,6 +259,24 @@ impl S16Instr {
         matches!(self, S16Instr::Jal { .. })
     }
 
+    /// Returns the destination register that this instruction writes to, if any.
+    pub fn dest_reg(&self) -> Option<Register> {
+        match self {
+            S16Instr::Add { d, .. }
+            | S16Instr::Sub { d, .. }
+            | S16Instr::Mul { d, .. }
+            | S16Instr::Div { d, .. }
+            | S16Instr::Trap { d, .. }
+            | S16Instr::Lea { d, .. }
+            | S16Instr::Load { d, .. }
+            | S16Instr::Jal { d, .. } => Some(*d),
+            S16Instr::Store { .. }
+            | S16Instr::Jump { .. }
+            | S16Instr::JumpCond { .. }
+            | S16Instr::Cmp { .. } => None,
+        }
+    }
+
     /// If this is an unconditional `jump`, return the target label (if symbolic).
     #[allow(dead_code)]
     pub fn jump_target(&self) -> Option<&str> {
@@ -301,6 +319,14 @@ impl fmt::Display for S16Instr {
 }
 
 // ============================================================================
+// Annotated instruction (regalloc output)
+// ============================================================================
+
+/// An instruction paired with an optional assembly comment.
+/// Used as the output type for register allocator operations.
+pub type AnnotatedInstr = (S16Instr, Option<String>);
+
+// ============================================================================
 // AsmItem — top-level assembly output element
 // ============================================================================
 
@@ -311,6 +337,7 @@ pub enum AsmItem {
     /// A typed machine instruction.
     Instr {
         instr: S16Instr,
+        comment: Option<String>,
         ir_map: Option<usize>,
     },
     /// A structured function (optimiser can inspect prologue/body/epilogue).

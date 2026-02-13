@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_with_allocator, AllocatorKind};
+use s16_compiler::backend::sigma16::{AllocatorKind, compile_ir_to_sigma16_with_allocator};
 use s16_compiler::compile_to_ir;
 use std::fs;
 use std::path::PathBuf;
@@ -86,8 +86,8 @@ fn main() {
 
     // Conditionally print IR
     if want_ir {
-        for (idx, line) in ir.to_lines().iter().enumerate() {
-            println!("{:3}: {}", idx, line);
+        for line in ir.to_lines() {
+            println!("{}", line);
         }
         println!();
         if args.test_source_map {
