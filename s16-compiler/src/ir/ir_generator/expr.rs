@@ -1,29 +1,47 @@
-use crate::ir::ast::{self, BinOp as AstBinOp, Expr, UnOp};
-use crate::ir::*;
-use crate::ir::symbol_table::SymbolKind;
-use crate::{CompileError, SemanticErrorKind};
 use super::context::Gen;
+use crate::ir::ast::{self, BinOp as AstBinOp, Expr, UnOp};
+use crate::ir::symbol_table::SymbolKind;
+use crate::ir::*;
+use crate::{CompileError, SemanticErrorKind};
 
 impl Gen {
     /// Lower condition: if false → GOTO target (fall through on true)
-    pub fn lower_condition_branch_false(&mut self, cond: &Expr, target: &str) -> Result<(), CompileError> {
+    pub fn lower_condition_branch_false(
+        &mut self,
+        cond: &Expr,
+        target: &str,
+    ) -> Result<(), CompileError> {
         match cond {
-            Expr::Binary { op: AstBinOp::And, left, right, .. } => {
+            Expr::Binary {
+                op: AstBinOp::And,
+                left,
+                right,
+                ..
+            } => {
                 self.lower_condition_branch_false(left, target)?;
                 self.lower_condition_branch_false(right, target)?;
                 Ok(())
             }
-            Expr::Binary { op: AstBinOp::Or, left, right, .. } => {
+            Expr::Binary {
+                op: AstBinOp::Or,
+                left,
+                right,
+                ..
+            } => {
                 let mid = self.new_label();
                 self.lower_condition_branch_false(left, &mid)?;
                 self.lower_condition_branch_false(right, target)?;
                 self.emit(Instr::Label(mid));
                 Ok(())
             }
-            Expr::Unary { op: UnOp::Not, operand, .. } => {
-                self.lower_condition_branch_true(operand, target)
-            }
-            Expr::Binary { op, left, right, .. } if is_rel(*op) => {
+            Expr::Unary {
+                op: UnOp::Not,
+                operand,
+                ..
+            } => self.lower_condition_branch_true(operand, target),
+            Expr::Binary {
+                op, left, right, ..
+            } if is_rel(*op) => {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
                 let inv_op = invert_rel(*op);
@@ -49,24 +67,42 @@ impl Gen {
     }
 
     /// Lower condition: if true → GOTO target (fall through on false)
-    pub fn lower_condition_branch_true(&mut self, cond: &Expr, target: &str) -> Result<(), CompileError> {
+    pub fn lower_condition_branch_true(
+        &mut self,
+        cond: &Expr,
+        target: &str,
+    ) -> Result<(), CompileError> {
         match cond {
-            Expr::Binary { op: AstBinOp::And, left, right, .. } => {
+            Expr::Binary {
+                op: AstBinOp::And,
+                left,
+                right,
+                ..
+            } => {
                 let after = self.new_label();
                 self.lower_condition_branch_false(left, &after)?;
                 self.lower_condition_branch_true(right, target)?;
                 self.emit(Instr::Label(after));
                 Ok(())
             }
-            Expr::Binary { op: AstBinOp::Or, left, right, .. } => {
+            Expr::Binary {
+                op: AstBinOp::Or,
+                left,
+                right,
+                ..
+            } => {
                 self.lower_condition_branch_true(left, target)?;
                 self.lower_condition_branch_true(right, target)?;
                 Ok(())
             }
-            Expr::Unary { op: UnOp::Not, operand, .. } => {
-                self.lower_condition_branch_false(operand, target)
-            }
-            Expr::Binary { op, left, right, .. } if is_rel(*op) => {
+            Expr::Unary {
+                op: UnOp::Not,
+                operand,
+                ..
+            } => self.lower_condition_branch_false(operand, target),
+            Expr::Binary {
+                op, left, right, ..
+            } if is_rel(*op) => {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
                 let direct_op = map_rel(*op);
@@ -122,21 +158,19 @@ impl Gen {
             Expr::Variable(id, name) => {
                 // Validate: Check if variable is defined
                 match this.symbols.lookup(name) {
-                    Some(info) => {
-                        match info.kind {
-                            SymbolKind::Variable => Ok(Value::Var(this.get_var(name.clone()))),
-                            SymbolKind::Array => Err(this.make_error(
-                                SemanticErrorKind::ArrayUsedAsVariable,
-                                *id,
-                                format!("Array '{}' used as variable (try {}[index])", name, name),
-                            )),
-                            SymbolKind::Function => Err(this.make_error(
-                                SemanticErrorKind::FunctionUsedAsVariable,
-                                *id,
-                                format!("Function '{}' used as variable (try {}())", name, name),
-                            )),
-                        }
-                    }
+                    Some(info) => match info.kind {
+                        SymbolKind::Variable => Ok(Value::Var(this.get_var(name.clone()))),
+                        SymbolKind::Array => Err(this.make_error(
+                            SemanticErrorKind::ArrayUsedAsVariable,
+                            *id,
+                            format!("Array '{}' used as variable (try {}[index])", name, name),
+                        )),
+                        SymbolKind::Function => Err(this.make_error(
+                            SemanticErrorKind::FunctionUsedAsVariable,
+                            *id,
+                            format!("Function '{}' used as variable (try {}())", name, name),
+                        )),
+                    },
                     None => {
                         // If not found in symbol table, treat as implicit variable declaration
                         // This matches the original behavior where variables don't need explicit declaration
@@ -145,12 +179,18 @@ impl Gen {
                 }
             }
 
-            Expr::Unary { op: ast::UnOp::Not, .. } => {
+            Expr::Unary {
+                op: ast::UnOp::Not, ..
+            } => {
                 let tmp = this.lower_bool_expr(e)?;
                 Ok(Value::Var(tmp))
             }
 
-            Expr::Unary { op: ast::UnOp::Neg, operand, .. } => {
+            Expr::Unary {
+                op: ast::UnOp::Neg,
+                operand,
+                ..
+            } => {
                 let v = this.eval_as_value(operand)?;
                 let tmp = this.new_temp();
                 this.emit(Instr::Assign {
@@ -164,8 +204,13 @@ impl Gen {
                 Ok(Value::Var(tmp))
             }
 
-            Expr::Binary { left, op, right, .. } => {
-                if matches!(op, AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod) {
+            Expr::Binary {
+                left, op, right, ..
+            } => {
+                if matches!(
+                    op,
+                    AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+                ) {
                     let lv = this.eval_as_value(left)?;
                     let rv = this.eval_as_value(right)?;
                     let arith_op = map_arith(*op);
@@ -191,7 +236,10 @@ impl Gen {
             Expr::Deref(_, ptr) => {
                 let addr = this.eval_as_pointer_expr(ptr)?;
                 let tmp = this.new_temp();
-                this.emit(Instr::Load { dst: tmp.clone(), addr });
+                this.emit(Instr::Load {
+                    dst: tmp.clone(),
+                    addr,
+                });
                 Ok(Value::Var(tmp))
             }
 
@@ -271,15 +319,20 @@ impl Gen {
 
     pub fn eval_as_pointer_expr(&mut self, e: &Expr) -> Result<Value, CompileError> {
         match e {
-            Expr::Variable(_, name) => Ok(Value::AddrOf(name.clone())),
+            // Only &x produces an AddrOf — the address of the named variable.
             Expr::AddrOf(_, name) => Ok(Value::AddrOf(name.clone())),
-            _ => self.eval_as_value(e), // fallback (e.g., complex pointer arithmetic)
+            // Everything else (variables, complex expressions) is evaluated
+            // normally — the resulting value IS the pointer (an address).
+            _ => self.eval_as_value(e),
         }
     }
 }
 
 pub fn is_rel(op: AstBinOp) -> bool {
-    matches!(op, AstBinOp::Eq | AstBinOp::Neq | AstBinOp::Lt | AstBinOp::Gt | AstBinOp::Le | AstBinOp::Ge)
+    matches!(
+        op,
+        AstBinOp::Eq | AstBinOp::Neq | AstBinOp::Lt | AstBinOp::Gt | AstBinOp::Le | AstBinOp::Ge
+    )
 }
 
 pub fn map_arith(op: AstBinOp) -> ArithOp {

@@ -342,6 +342,16 @@ impl Codegen {
                 }
             }
             Instr::Store { addr, src } => {
+                // For indirect stores (addr is a variable holding a pointer),
+                // flush dirty globals to memory first so the store doesn't
+                // silently alias a cached dirty global.
+                let is_indirect = !matches!(addr, Value::AddrOf(_));
+                if is_indirect && self.advanced_mode {
+                    let mut out = Vec::new();
+                    self.reg.flush_globals(&mut out);
+                    self.drain_regalloc(out);
+                }
+
                 let (ra, free_a) = self.ensure_in_reg(addr);
                 let (rs, free_s) = self.ensure_in_reg(src);
                 self.push_commented(
@@ -349,11 +359,10 @@ impl Codegen {
                     format!("*{} = {}", describe_val(addr), describe_val(src)),
                 );
 
-                // If addr is AddrOf(name), the store writes to the memory
-                // location of global variable `name`. Any cached register
-                // binding for that variable is now stale - free it without
-                // writing back (memory has the authoritative value).
                 if let Value::AddrOf(name) = addr {
+                    // addr is &name — the store writes directly to `name`.
+                    // Invalidate any cached register binding for that variable
+                    // (memory now has the authoritative value).
                     if self.advanced_mode {
                         let var = Var::global(name.clone());
                         if let Some(r) = self.reg.get_var_reg(&var) {
@@ -361,6 +370,9 @@ impl Codegen {
                         }
                     }
                 }
+                // For indirect stores through a Var pointer, globals were
+                // already flushed above and their bindings freed, so any
+                // subsequent read will reload from memory.
 
                 if free_a {
                     self.reg.free_reg(ra);
