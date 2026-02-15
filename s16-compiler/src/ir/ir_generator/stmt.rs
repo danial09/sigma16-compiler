@@ -196,13 +196,39 @@ impl Gen {
                 Ok(())
             }
             LValue::Index { base, index } => {
-                let index_v = self.eval_as_value(index)?;
-                let src_v = self.eval_as_value(rhs)?;
-                self.emit(Instr::ArrayStore {
-                    base: base.clone(),
-                    index: index_v,
-                    src: src_v,
-                });
+                // Check if base is a local variable (pointer parameter) or a global array
+                let is_pointer_param = matches!(
+                    self.symbols.lookup(base),
+                    Some(info) if matches!(info.kind, SymbolKind::Variable)
+                );
+                if is_pointer_param {
+                    // Pointer arithmetic: *(base + index) = rhs
+                    let base_v = Value::Var(self.get_var(base.clone()));
+                    let index_v = self.eval_as_value(index)?;
+                    let src_v = self.eval_as_value(rhs)?;
+                    let addr_tmp = self.new_temp();
+                    self.emit(Instr::Assign {
+                        dst: addr_tmp.clone(),
+                        src: Rhs::Binary {
+                            op: ArithOp::Add,
+                            left: base_v,
+                            right: index_v,
+                        },
+                    });
+                    self.emit(Instr::Store {
+                        addr: Value::Var(addr_tmp),
+                        src: src_v,
+                    });
+                } else {
+                    // Global array: use ArrayStore
+                    let index_v = self.eval_as_value(index)?;
+                    let src_v = self.eval_as_value(rhs)?;
+                    self.emit(Instr::ArrayStore {
+                        base: base.clone(),
+                        index: index_v,
+                        src: src_v,
+                    });
+                }
                 Ok(())
             }
         }

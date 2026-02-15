@@ -4,19 +4,23 @@
 //! a linear intermediate representation (IR).
 
 pub mod context;
-pub mod stmt;
 pub mod expr;
+pub mod stmt;
 
-use crate::ir::ast::{Program, AstSpanRecord};
-use crate::ir::ProgramIR;
 use crate::CompileError;
+use crate::ir::ProgramIR;
+use crate::ir::ast::{AstSpanRecord, Program};
 
 /// The main Gen struct that orchestrates the lowering process.
 pub use context::Gen;
 
 /// Entry point for lowering an AST Program to ProgramIR.
-pub fn lower(program: &Program, spans: Vec<AstSpanRecord>) -> Result<(ProgramIR, Vec<AstSpanRecord>), CompileError> {
-    let mut g = Gen::new(spans);
+pub fn lower(
+    program: &Program,
+    spans: Vec<AstSpanRecord>,
+    source: &str,
+) -> Result<(ProgramIR, Vec<AstSpanRecord>), CompileError> {
+    let mut g = Gen::new(spans, source);
     g.lower_program(program)?;
     Ok(g.finish())
 }

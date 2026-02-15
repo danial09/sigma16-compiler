@@ -1,6 +1,6 @@
-use crate::ir::*;
-use crate::ir::symbol_table::SymbolTable;
 use crate::ir::ast::AstSpanRecord;
+use crate::ir::symbol_table::SymbolTable;
+use crate::ir::*;
 use crate::{CompileError, SemanticErrorKind};
 
 #[derive(Debug, Clone)]
@@ -20,9 +20,11 @@ pub struct Gen {
 }
 
 impl Gen {
-    pub fn new(ast_spans: Vec<AstSpanRecord>) -> Self {
+    pub fn new(ast_spans: Vec<AstSpanRecord>, source: &str) -> Self {
+        let mut out = ProgramIR::new();
+        out.source_map.init_source_index(source);
         Self {
-            out: ProgramIR::new(),
+            out,
             temp_count: 0,
             label_count: 0,
             current_ast_node: None,
@@ -37,17 +39,26 @@ impl Gen {
         (self.out, self.ast_spans)
     }
 
-    pub fn make_error(&self, kind: SemanticErrorKind, ast_id: AstNodeId, message: String) -> CompileError {
+    pub fn make_error(
+        &self,
+        kind: SemanticErrorKind,
+        ast_id: AstNodeId,
+        message: String,
+    ) -> CompileError {
         // Get span info for the AST node
-        let (line, col, offset) = if let Some(span_record) = self.ast_spans.iter().find(|s| s.id == ast_id) {
-            // Convert byte offset to line:col if we have source index
-            let (l, c) = self.out.source_map.source_index_ref()
-                .map(|idx| idx.to_line_col(span_record.start))
-                .unwrap_or((0, 0));
-            (l + 1, c + 1, span_record.start) // Convert to 1-based for display
-        } else {
-            (0, 0, 0)
-        };
+        let (line, col, offset) =
+            if let Some(span_record) = self.ast_spans.iter().find(|s| s.id == ast_id) {
+                // Convert byte offset to line:col if we have source index
+                let (l, c) = self
+                    .out
+                    .source_map
+                    .source_index_ref()
+                    .map(|idx| idx.to_line_col(span_record.start))
+                    .unwrap_or((0, 0));
+                (l + 1, c + 1, span_record.start) // Convert to 1-based for display
+            } else {
+                (0, 0, 0)
+            };
 
         CompileError::Semantic {
             kind,
