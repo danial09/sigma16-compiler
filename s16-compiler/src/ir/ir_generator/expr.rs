@@ -160,11 +160,11 @@ impl Gen {
                 match this.symbols.lookup(name) {
                     Some(info) => match info.kind {
                         SymbolKind::Variable => Ok(Value::Var(this.get_var(name.clone()))),
-                        SymbolKind::Array => Err(this.make_error(
-                            SemanticErrorKind::ArrayUsedAsVariable,
-                            *id,
-                            format!("Array '{}' used as variable (try {}[index])", name, name),
-                        )),
+                        SymbolKind::Array => {
+                            // Array decays to pointer (address) when used as a value.
+                            // This allows passing arrays to functions as pointer arguments.
+                            Ok(Value::AddrOf(name.clone()))
+                        }
                         SymbolKind::Function => Err(this.make_error(
                             SemanticErrorKind::FunctionUsedAsVariable,
                             *id,
@@ -244,15 +244,37 @@ impl Gen {
             }
 
             Expr::Index { id, base, index } => {
-                // Validate: Check if base is an array
-                match this.symbols.lookup_global(base) {
+                // Check if base is a known symbol (locals first, then globals)
+                match this.symbols.lookup(base) {
                     Some(info) if matches!(info.kind, SymbolKind::Array) => {
+                        // Global array: use ArrayLoad
                         let index_v = this.eval_as_value(index)?;
                         let tmp = this.new_temp();
                         this.emit(Instr::ArrayLoad {
                             dst: tmp.clone(),
                             base: base.clone(),
                             index: index_v,
+                        });
+                        Ok(Value::Var(tmp))
+                    }
+                    Some(info) if matches!(info.kind, SymbolKind::Variable) => {
+                        // Local variable (e.g. function parameter) used with indexing:
+                        // treat as pointer arithmetic: *(base + index)
+                        let base_v = Value::Var(this.get_var(base.clone()));
+                        let index_v = this.eval_as_value(index)?;
+                        let addr_tmp = this.new_temp();
+                        this.emit(Instr::Assign {
+                            dst: addr_tmp.clone(),
+                            src: Rhs::Binary {
+                                op: ArithOp::Add,
+                                left: base_v,
+                                right: index_v,
+                            },
+                        });
+                        let tmp = this.new_temp();
+                        this.emit(Instr::Load {
+                            dst: tmp.clone(),
+                            addr: Value::Var(addr_tmp),
                         });
                         Ok(Value::Var(tmp))
                     }

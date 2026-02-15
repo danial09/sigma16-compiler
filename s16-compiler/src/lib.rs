@@ -77,7 +77,7 @@ pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
     let parsed = ir::ast::parse_to_ast(source)?;
 
     // Lower with semantic validation
-    let (mut ir_prog, ast_spans) = ir::ir_generator::lower(&parsed.program, parsed.spans)?;
+    let (mut ir_prog, ast_spans) = ir::ir_generator::lower(&parsed.program, parsed.spans, source)?;
 
     // Run optimization passes
     ir::opt::optimize(&mut ir_prog);
