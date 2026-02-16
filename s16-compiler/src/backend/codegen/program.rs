@@ -1,58 +1,18 @@
-//! Sigma16 Code Generation.
+//! Program-level code generation orchestration.
 //!
-//! This module lowers IR instructions into Sigma16 assembly code.
-//! It uses a register allocator to manage the mapping of variables to registers.
+//! Implements `Codegen::emit_program` which walks the complete IR instruction
+//! list, partitions it into functions and top-level regions, wires up liveness
+//! analysis, and drives instruction-level lowering.
 
-pub mod emitter;
-pub mod instr_lowering;
-pub mod item;
-
-use super::abi::Register;
-use super::liveness;
-use super::regalloc::{AdvancedRegAllocator, AllocatorKind, GreedyRegAllocator, RegAllocator};
+use super::Codegen;
+use crate::backend::abi::Register;
+use crate::backend::liveness;
 use crate::ir::{Instr, ProgramIR, Rhs, Value, Var};
-/// Codegen orchestrates the emission of assembly from IR.
-pub use emitter::Codegen;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone)]
-pub struct Sigma16Asm {
-    pub lines: Vec<String>,
-    pub asm_ir_mapping: Vec<Option<usize>>,
-}
-
-impl Sigma16Asm {
-    pub fn join(&self) -> String {
-        self.lines.join("\n")
-    }
-}
-
-pub fn compile_ir_to_sigma16(ir: &ProgramIR) -> String {
-    let asm = compile_ir_to_sigma16_mapped(ir);
-    asm.join()
-}
-
-pub fn compile_ir_to_sigma16_mapped(ir: &ProgramIR) -> Sigma16Asm {
-    compile_ir_to_sigma16_with_allocator_mapped(AllocatorKind::Advanced, ir)
-}
-
-pub fn compile_ir_to_sigma16_with_allocator(kind: AllocatorKind, ir: &ProgramIR) -> String {
-    let asm = compile_ir_to_sigma16_with_allocator_mapped(kind, ir);
-    asm.join()
-}
-
-pub fn compile_ir_to_sigma16_with_allocator_mapped(
-    kind: AllocatorKind,
-    ir: &ProgramIR,
-) -> Sigma16Asm {
-    let (reg, advanced): (Box<dyn RegAllocator>, bool) = match kind {
-        AllocatorKind::Basic => (Box::new(GreedyRegAllocator::new()), false),
-        AllocatorKind::Advanced => (Box::new(AdvancedRegAllocator::new()), true),
-    };
-    let mut cg = Codegen::with_regalloc(reg, advanced);
-    cg.emit_program(ir);
-    cg.finish_codegen()
-}
+// ============================================================================
+// Region-boundary helpers
+// ============================================================================
 
 /// Find the end of a function starting at `start` in the instruction list.
 fn find_func_end(instrs: &[Instr], start: usize) -> usize {
@@ -67,7 +27,7 @@ fn find_func_end(instrs: &[Instr], start: usize) -> usize {
 }
 
 /// Find the extent of top-level code starting at `start`.
-/// Stops at the next FuncStart or end of instructions.
+/// Stops at the next `FuncStart` or end of instructions.
 fn find_toplevel_end(instrs: &[Instr], start: usize) -> usize {
     let mut j = start;
     while j < instrs.len() {
@@ -80,7 +40,7 @@ fn find_toplevel_end(instrs: &[Instr], start: usize) -> usize {
 }
 
 // ============================================================================
-// Function variable analysis for register-resident mode
+// Function variable analysis (for register-resident mode)
 // ============================================================================
 
 /// Collect all distinct register-allocated (local/temp) variables used in a
@@ -164,9 +124,6 @@ fn is_leaf_function(instrs: &[Instr], start: usize, end: usize) -> bool {
         .any(|i| matches!(i, Instr::Call { .. }))
 }
 
-/// Number of GP registers reserved for temporaries (immediates, addresses).
-const TEMP_REGISTER_RESERVE: usize = 2;
-
 /// Compute fixed variable-to-register assignments for register-resident mode.
 ///
 /// Returns `None` if the variables don't fit in available registers.
@@ -175,16 +132,16 @@ fn compute_fixed_assignments(
     params: &[String],
     is_leaf: bool,
 ) -> Option<HashMap<Var, Register>> {
-    let budget = Register::GP_REGS.len() - TEMP_REGISTER_RESERVE; // 10
+    let budget = Register::GP_REGS.len() - Register::TEMP_RESERVE; // 10
 
     if vars.len() > budget {
-        return None; // Too many variables for register-resident mode
+        return None;
     }
 
     let mut assignments = HashMap::new();
     let mut used = HashSet::new();
 
-    // Step 1: Parameters keep their natural registers (R1-R8).
+    // Step 1: Parameters keep their natural registers (R1–R8).
     for (i, p) in params.iter().enumerate().take(8) {
         let var = Var::local(p.clone());
         if vars.contains(&var) {
@@ -194,11 +151,8 @@ fn compute_fixed_assignments(
         }
     }
 
-    // Step 2: Build register order for remaining variables.
-    // For leaf functions: use remaining GP registers in order (caller-saved
-    // first naturally since GP_REGS starts with R1).
-    // For non-leaf functions: prefer callee-saved (R9-R12) so variables
-    // survive across calls without save/restore.
+    // Step 2: Assign remaining variables.
+    // Leaf functions: any GP order.  Non-leaf: prefer callee-saved.
     let reg_order: Vec<Register> = if is_leaf {
         Register::GP_REGS
             .iter()
@@ -229,22 +183,25 @@ fn compute_fixed_assignments(
             Some(reg) => {
                 assignments.insert(var.clone(), reg);
             }
-            None => return None, // Ran out of registers
+            None => return None,
         }
     }
 
     Some(assignments)
 }
 
+// ============================================================================
+// Program emission
+// ============================================================================
+
 impl Codegen {
+    /// Walk the full IR program and emit assembly.
     pub fn emit_program(&mut self, ir: &ProgramIR) {
         self.arrays = ir.arrays.clone();
         self.emitted_header = true;
-
-        // Initialize register allocation for top-level code
         self.reg.begin_region();
 
-        // Set liveness for initial top-level region if in advanced mode
+        // Set liveness for initial top-level region (advanced mode).
         if self.advanced_mode {
             let end = find_toplevel_end(&ir.instrs, 0);
             if end > 0 {
@@ -257,25 +214,23 @@ impl Codegen {
             self.current_ir = Some(ir_index);
             self.reg.set_current_instruction(ir_index);
 
-            // When entering a function, compute and set its liveness info
+            // Function entry: compute liveness + register-resident eligibility.
             if let Instr::FuncStart { name: _, params } = instr {
                 if self.advanced_mode {
                     let end = find_func_end(&ir.instrs, ir_index);
 
-                    // Analyse the function for register-resident eligibility:
-                    // if all variables fit in registers, assign fixed registers
-                    // so that no spills are needed at branch points.
                     let func_vars = collect_function_vars(&ir.instrs, ir_index, end);
                     let leaf = is_leaf_function(&ir.instrs, ir_index, end);
                     let fixed = compute_fixed_assignments(&func_vars, params, leaf);
 
-                    let func_liveness = liveness::compute_liveness(&ir.instrs, ir_index, end);
-                    // Note: start_function() calls begin_region() which clears liveness,
-                    // so we set it AFTER emit_instr processes FuncStart.
+                    let func_liveness =
+                        liveness::compute_liveness(&ir.instrs, ir_index, end);
+
+                    // emit_instr processes FuncStart (calls begin_region), then
+                    // we install liveness and fixed assignments.
                     self.emit_instr(instr);
                     self.reg.set_liveness(func_liveness);
 
-                    // Enable register-resident mode if the function qualifies.
                     if let Some(assignments) = fixed {
                         self.reg.set_register_resident(assignments);
                     }
@@ -285,17 +240,18 @@ impl Codegen {
                 }
             }
 
-            // When exiting a function, set liveness for the next top-level region
+            // Function exit: set liveness for the next top-level region.
             if let Instr::FuncEnd { .. } = instr {
                 if self.advanced_mode {
                     self.emit_instr(instr);
                     self.reg.clear_temp_busy();
-                    // Set liveness for subsequent top-level code
+
                     let next = ir_index + 1;
                     if next < ir.instrs.len() {
                         let end = find_toplevel_end(&ir.instrs, next);
                         if end > next {
-                            let info = liveness::compute_liveness(&ir.instrs, next, end);
+                            let info =
+                                liveness::compute_liveness(&ir.instrs, next, end);
                             self.reg.set_liveness(info);
                         }
                     }
@@ -307,9 +263,7 @@ impl Codegen {
             self.reg.clear_temp_busy();
         }
 
-        // Flush any remaining dirty globals while current_ir still points to
-        // the last instruction, so the generated store instructions receive
-        // the correct IR-to-source mapping.
+        // Final flush.
         let mut out = Vec::new();
         self.reg.flush_all(&mut out);
         self.drain_regalloc(out);

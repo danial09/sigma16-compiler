@@ -1,4 +1,10 @@
-use super::super::abi::Register;
+//! Sigma16 machine-instruction types and assembly output items.
+//!
+//! This module defines the typed instruction set (`S16Instr`), displacement
+//! operands (`Disp`), condition codes (`Cond`), and the structured assembly
+//! output type (`AsmItem`) used throughout the backend.
+
+use super::abi::Register;
 use std::fmt;
 
 // ============================================================================
@@ -42,7 +48,7 @@ pub enum Cond {
 }
 
 impl Cond {
-    /// Returns the assembly mnemonic suffix for this condition.
+    /// Returns the assembly mnemonic for this condition.
     pub fn mnemonic(&self) -> &'static str {
         match self {
             Cond::Eq => "jumpeq",
@@ -70,7 +76,7 @@ impl Cond {
 ///   the condition is encoded in the mnemonic rather than a register field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum S16Instr {
-    // ── RRR format: op Rd,Ra,Rb ─────────────────────────────────────────
+    // ── RRR format ──────────────────────────────────────────────────────
     /// `add Rd,Ra,Rb`
     Add {
         d: Register,
@@ -104,7 +110,7 @@ pub enum S16Instr {
         b: Register,
     },
 
-    // ── RX format: op Rd,disp[Rb] ───────────────────────────────────────
+    // ── RX format ───────────────────────────────────────────────────────
     /// `lea Rd,disp[Rb]` — load effective address
     Lea {
         d: Register,
@@ -330,6 +336,11 @@ pub type AnnotatedInstr = (S16Instr, Option<String>);
 // AsmItem — top-level assembly output element
 // ============================================================================
 
+/// A structured assembly output element.
+///
+/// The backend emits a tree of `AsmItem`s that is later flattened to text.
+/// The optimizer (`optimize.rs`) works on this structured representation
+/// before final emission.
 #[derive(Debug, Clone)]
 pub enum AsmItem {
     /// A label on its own line.

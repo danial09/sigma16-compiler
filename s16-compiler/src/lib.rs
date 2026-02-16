@@ -96,5 +96,5 @@ pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
 /// Compile source text directly to Sigma16 assembly.
 pub fn compile_to_sigma16(source: &str) -> Result<String, CompileError> {
     let ir = compile_to_ir(source)?;
-    Ok(backend::sigma16::compile_ir_to_sigma16(&ir))
+    Ok(backend::compile_ir_to_sigma16(&ir))
 }

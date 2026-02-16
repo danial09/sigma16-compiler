@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs, W
 use ratatui::Terminal;
 use tui_textarea::{Input, Key, TextArea};
 
-use s16_compiler::backend::sigma16::{compile_ir_to_sigma16_mapped};
+use s16_compiler::backend::compile_ir_to_sigma16_mapped;
 use s16_compiler::ir::{AstNodeId, AstNodeKind, ControlFlowComponent, ProgramIR};
 
 pub fn run_tui(path: Option<PathBuf>, initial_text: String) -> Result<()> {
