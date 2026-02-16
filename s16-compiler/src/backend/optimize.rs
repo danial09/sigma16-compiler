@@ -197,6 +197,87 @@ impl AsmPass for PrologueEpilogueOptimizer {
 }
 
 // ============================================================================
+// Return inliner — inlines trivial epilogues into function bodies
+// ============================================================================
+
+/// For functions where the epilogue is just `ret_<name>: jump 0[R13]`,
+/// replaces each `jump ret_<name>` in the body with `jump 0[R13]` directly,
+/// then removes the now-unreferenced label from the epilogue.
+struct ReturnInliner;
+
+impl ReturnInliner {
+    /// Check if an item is `jump <label>[R0]` targeting `ret_label`.
+    fn is_jump_to_ret(item: &AsmItem, ret_label: &str) -> bool {
+        matches!(
+            item,
+            AsmItem::Instr {
+                instr: S16Instr::Jump {
+                    disp: Disp::Label(target),
+                    idx,
+                },
+                ..
+            } if target == ret_label && *idx == Register::ZERO_REG
+        )
+    }
+}
+
+impl AsmPass for ReturnInliner {
+    fn run(&self, items: &mut Vec<AsmItem>) {
+        for item in items.iter_mut() {
+            if let AsmItem::Function {
+                name,
+                epilogue,
+                body,
+                ..
+            } = item
+            {
+                // Check if epilogue is exactly [Label("ret_<name>"), jump 0[R13]]
+                let ret_label = format!("ret_{}", name);
+                let is_trivial_epilogue = epilogue.len() == 2
+                    && matches!(&epilogue[0], AsmItem::Label(lbl, _) if lbl == &ret_label)
+                    && matches!(
+                        &epilogue[1],
+                        AsmItem::Instr {
+                            instr: S16Instr::Jump {
+                                disp: Disp::Num(0),
+                                idx,
+                            },
+                            ..
+                        } if *idx == Register::LINK_REG
+                    );
+
+                if !is_trivial_epilogue {
+                    continue;
+                }
+
+                // Replace each `jump ret_<name>` in the body with `jump 0[R13]`
+                for body_item in body.iter_mut() {
+                    if Self::is_jump_to_ret(body_item, &ret_label) {
+                        // Preserve the ir_map from the original instruction
+                        let ir_map = if let AsmItem::Instr { ir_map, .. } = body_item {
+                            *ir_map
+                        } else {
+                            None
+                        };
+                        *body_item = AsmItem::Instr {
+                            instr: S16Instr::Jump {
+                                disp: Disp::Num(0),
+                                idx: Register::LINK_REG,
+                            },
+                            comment: Some("return".to_string()),
+                            ir_map,
+                        };
+                    }
+                }
+
+                // Remove the label from the epilogue (keep only the final jump)
+                epilogue.remove(0);
+            }
+        }
+    }
+}
+
+// ============================================================================
 // Public entry point
 // ============================================================================
 
@@ -206,5 +287,8 @@ pub fn optimize(items: &mut Vec<AsmItem>) {
     pm.add(Box::new(PeepholeOptimizer));
     pm.add(Box::new(JumpOptimizer));
     pm.add(Box::new(PrologueEpilogueOptimizer));
+    pm.add(Box::new(ReturnInliner));
+    // Re-run jump optimizer to eliminate fallthrough jumps created by inlining.
+    pm.add(Box::new(JumpOptimizer));
     pm.run_all(items);
 }

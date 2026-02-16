@@ -48,9 +48,15 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     /// Return from function (single return value)
-    Return { id: AstNodeId, value: Expr },
+    Return { id: AstNodeId, value: Option<Expr> },
     /// Expression used as a statement (e.g., a call with ignored result)
     ExprStmt { id: AstNodeId, expr: Expr },
+    /// Global variable assignment from within a function: global x = expr;
+    GlobalAssign {
+        id: AstNodeId,
+        name: String,
+        value: Expr,
+    },
     /// String declaration: name = "abc";
     StringDecl {
         id: AstNodeId,
@@ -70,6 +76,7 @@ impl Stmt {
             Stmt::Function { id, .. } => *id,
             Stmt::Return { id, .. } => *id,
             Stmt::ExprStmt { id, .. } => *id,
+            Stmt::GlobalAssign { id, .. } => *id,
             Stmt::StringDecl { id, .. } => *id,
         }
     }
@@ -79,6 +86,8 @@ impl Stmt {
 pub enum Expr {
     Number(AstNodeId, i64),
     Variable(AstNodeId, String),
+    /// Read a global variable explicitly: global x
+    GlobalVar(AstNodeId, String),
     /// Function call: name(args)
     Call {
         id: AstNodeId,
@@ -113,6 +122,7 @@ impl Expr {
         match self {
             Expr::Number(id, _) => *id,
             Expr::Variable(id, _) => *id,
+            Expr::GlobalVar(id, _) => *id,
             Expr::Call { id, .. } => *id,
             Expr::Binary { id, .. } => *id,
             Expr::Unary { id, .. } => *id,
