@@ -1,32 +1,88 @@
-use super::abi::Register;
-use super::codegen::item::{AsmItem, Disp, S16Instr};
+//! Assembly-level optimization passes.
+//!
+//! Each pass implements the `AsmPass` trait and operates on a `Vec<AsmItem>`.
+//! Passes are composed via the `PassManager` and run after code generation
+//! but before the final text emission.
 
+use super::abi::Register;
+use super::instruction::{AsmItem, Disp, S16Instr};
+
+// ============================================================================
+// Pass infrastructure
+// ============================================================================
+
+/// A single optimization pass over assembly output.
 pub trait AsmPass {
     fn run(&self, items: &mut Vec<AsmItem>);
 }
 
-pub struct PassManager {
+/// Runs a sequence of `AsmPass`es in order.
+struct PassManager {
     passes: Vec<Box<dyn AsmPass>>,
 }
 
 impl PassManager {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self { passes: Vec::new() }
     }
 
-    pub fn add_pass(&mut self, pass: Box<dyn AsmPass>) {
+    fn add(&mut self, pass: Box<dyn AsmPass>) {
         self.passes.push(pass);
     }
 
-    pub fn run(&self, items: &mut Vec<AsmItem>) {
+    fn run_all(&self, items: &mut Vec<AsmItem>) {
         for pass in &self.passes {
             pass.run(items);
         }
     }
 }
 
-/// Removes jumps to the immediately following label.
-pub struct JumpOptimizer;
+// ============================================================================
+// Peephole optimizer — removes redundant instructions
+// ============================================================================
+
+/// Removes redundant instructions like `add Rx,R0,Rx` (identity moves).
+struct PeepholeOptimizer;
+
+impl AsmPass for PeepholeOptimizer {
+    fn run(&self, items: &mut Vec<AsmItem>) {
+        Self::optimize_function_bodies(items);
+    }
+}
+
+impl PeepholeOptimizer {
+    fn optimize_function_bodies(items: &mut Vec<AsmItem>) {
+        for item in items.iter_mut() {
+            if let AsmItem::Function { body, .. } = item {
+                Self::remove_identity_moves(body);
+            }
+        }
+        // Also optimize top-level instructions.
+        Self::remove_identity_moves(items);
+    }
+
+    fn remove_identity_moves(instrs: &mut Vec<AsmItem>) {
+        instrs.retain(|item| {
+            if let AsmItem::Instr {
+                instr: S16Instr::Add { d, a, b },
+                ..
+            } = item
+            {
+                // `add Rx,R0,Rx` is a no-op.
+                !(*a == Register::ZERO_REG && b == d)
+            } else {
+                true
+            }
+        });
+    }
+}
+
+// ============================================================================
+// Jump optimizer — removes fallthrough jumps
+// ============================================================================
+
+/// Removes `jump X` instructions that are immediately followed by label `X`.
+struct JumpOptimizer;
 
 impl JumpOptimizer {
     /// Remove any `jump X` immediately followed by label `X` in a flat list.
@@ -60,12 +116,13 @@ impl JumpOptimizer {
 
 impl AsmPass for JumpOptimizer {
     fn run(&self, items: &mut Vec<AsmItem>) {
-        // Optimize inside function bodies and at the body→epilogue boundary
+        // Optimize inside function bodies and at body→epilogue boundary.
         for item in items.iter_mut() {
             if let AsmItem::Function { body, epilogue, .. } = item {
                 Self::eliminate_fallthrough_jumps(body);
                 Self::eliminate_fallthrough_jumps(epilogue);
-                // Check boundary: last instruction of body jumping to first label of epilogue
+
+                // Check boundary: last body instruction jumping to first epilogue label.
                 if let Some(AsmItem::Instr {
                     instr:
                         S16Instr::Jump {
@@ -83,13 +140,18 @@ impl AsmPass for JumpOptimizer {
                 }
             }
         }
-        // Optimize top-level items
+        // Optimize top-level items.
         Self::eliminate_fallthrough_jumps(items);
     }
 }
 
-/// Omits prologue and epilogue for leaf functions with no stack usage.
-pub struct PrologueEpilogueOptimizer;
+// ============================================================================
+// Prologue/epilogue optimizer — omits frame setup for trivial leaf functions
+// ============================================================================
+
+/// Omits prologue and epilogue for leaf functions with no stack usage and no
+/// callee-saved register pressure.
+struct PrologueEpilogueOptimizer;
 
 impl AsmPass for PrologueEpilogueOptimizer {
     fn run(&self, items: &mut Vec<AsmItem>) {
@@ -103,20 +165,11 @@ impl AsmPass for PrologueEpilogueOptimizer {
                 ..
             } = item
             {
-                // If it's a leaf function and doesn't use any stack space beyond R14
-                // and doesn't use any callee-saved registers.
-                // frame_size here is max_slots.
                 if *is_leaf && *frame_size == 0 && used_callee.is_empty() {
                     prologue.clear();
 
-                    // The epilogue normally contains:
-                    // 1. restore callee-saved
-                    // 2. lea R14, -frame[R14]
-                    // 3. load R13, 0[R14]
-                    // 4. jump 0[R13]
-
-                    // We want to keep the epilogue label (for early returns)
-                    // and the final jump 0[R13], discarding everything else.
+                    // Keep the epilogue label (for early returns) and the
+                    // final `jump 0[R13]`, discard everything else.
                     if let Some(jump_item) = epilogue.last().cloned() {
                         if let AsmItem::Instr {
                             instr:
@@ -127,7 +180,6 @@ impl AsmPass for PrologueEpilogueOptimizer {
                             ..
                         } = &jump_item
                         {
-                            // Collect leading labels (e.g. ret_funcname)
                             let labels: Vec<AsmItem> = epilogue
                                 .iter()
                                 .take_while(|it| matches!(it, AsmItem::Label(..)))
@@ -144,55 +196,15 @@ impl AsmPass for PrologueEpilogueOptimizer {
     }
 }
 
-/// Removes redundant instructions like `add Rx,R0,Rx` and store/load pairs
-pub struct PeepholeOptimizer;
+// ============================================================================
+// Public entry point
+// ============================================================================
 
-impl AsmPass for PeepholeOptimizer {
-    fn run(&self, items: &mut Vec<AsmItem>) {
-        Self::optimize_function_bodies(items);
-    }
-}
-
-impl PeepholeOptimizer {
-    fn optimize_function_bodies(items: &mut Vec<AsmItem>) {
-        for item in items.iter_mut() {
-            if let AsmItem::Function { body, .. } = item {
-                Self::optimize_instructions(body);
-            }
-        }
-        // Also optimize top-level instructions
-        Self::optimize_instructions(items);
-    }
-
-    fn optimize_instructions(instrs: &mut Vec<AsmItem>) {
-        let mut i = 0;
-        while i < instrs.len() {
-            let mut remove = false;
-
-            if let AsmItem::Instr {
-                instr: S16Instr::Add { d, a, b },
-                ..
-            } = &instrs[i]
-            {
-                // Remove redundant `add Rx,R0,Rx` (identity move / no-op)
-                if *a == Register::ZERO_REG && b == d {
-                    remove = true;
-                }
-            }
-
-            if remove {
-                instrs.remove(i);
-            } else {
-                i += 1;
-            }
-        }
-    }
-}
-
+/// Run all optimization passes on the assembly output.
 pub fn optimize(items: &mut Vec<AsmItem>) {
     let mut pm = PassManager::new();
-    pm.add_pass(Box::new(PeepholeOptimizer));
-    pm.add_pass(Box::new(JumpOptimizer));
-    pm.add_pass(Box::new(PrologueEpilogueOptimizer));
-    pm.run(items);
+    pm.add(Box::new(PeepholeOptimizer));
+    pm.add(Box::new(JumpOptimizer));
+    pm.add(Box::new(PrologueEpilogueOptimizer));
+    pm.run_all(items);
 }

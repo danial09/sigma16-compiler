@@ -1,7 +1,7 @@
 //! Liveness analysis for IR regions (functions or top-level code).
 //!
 //! Computes per-instruction live variable sets using iterative dataflow
-//! analysis over basic blocks. Used by the advanced register allocator
+//! analysis over basic blocks.  Used by the advanced register allocator
 //! to avoid spilling dead variables and to choose optimal spill victims.
 
 use crate::ir::{Instr, Rhs, Value, Var};
@@ -15,7 +15,7 @@ pub struct LivenessInfo {
     /// Offset of the region start in the global instruction list.
     offset: usize,
     /// For each instruction index (relative to region start), maps each live
-    /// variable to the global index of its next use. Variables not present
+    /// variable to the global index of its next use.  Variables not present
     /// have no subsequent use in the region.
     next_use: Vec<HashMap<Var, usize>>,
 }
@@ -30,7 +30,7 @@ impl LivenessInfo {
     }
 
     /// Return the global index of the next use of `var` strictly after
-    /// instruction `idx`. Returns `usize::MAX` if there is no subsequent use.
+    /// instruction `idx`.  Returns `usize::MAX` if there is no subsequent use.
     pub fn next_use_after(&self, idx: usize, var: &Var) -> usize {
         match idx.checked_sub(self.offset) {
             Some(i) => self
@@ -44,11 +44,15 @@ impl LivenessInfo {
     }
 }
 
+// ── Basic block representation ──────────────────────────────────────────
+
 struct BasicBlock {
     start: usize,
     end: usize,             // inclusive
     successors: Vec<usize>, // block indices
 }
+
+// ── Instruction-level use/def extraction ────────────────────────────────
 
 /// Extract variables used (read) by an instruction.
 fn get_uses(instr: &Instr) -> Vec<Var> {
@@ -105,9 +109,11 @@ fn get_def(instr: &Instr) -> Option<Var> {
     }
 }
 
+// ── Core dataflow analysis ──────────────────────────────────────────────
+
 /// Compute liveness information for a region of IR instructions.
 ///
-/// `instrs` is the full instruction list. The region spans `[start, end)`.
+/// `instrs` is the full instruction list.  The region spans `[start, end)`.
 pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessInfo {
     let region = &instrs[start..end];
     let n = region.len();
@@ -120,7 +126,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         };
     }
 
-    // Step 1: Identify basic block boundaries
+    // Step 1: Identify basic block boundaries.
     let mut block_starts: HashSet<usize> = HashSet::new();
     block_starts.insert(0);
 
@@ -148,7 +154,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
     let mut sorted_starts: Vec<usize> = block_starts.into_iter().collect();
     sorted_starts.sort();
 
-    // Step 2: Build basic blocks with successor edges
+    // Step 2: Build basic blocks with successor edges.
     let start_to_block: HashMap<usize, usize> = sorted_starts
         .iter()
         .enumerate()
@@ -185,7 +191,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
                 }
             }
             Instr::Return { .. } | Instr::FuncEnd { .. } => {
-                // No successors
+                // No successors.
             }
             _ => {
                 if bi + 1 < sorted_starts.len() {
@@ -201,7 +207,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         });
     }
 
-    // Step 3: Compute gen/kill sets per block
+    // Step 3: Compute gen/kill sets per block.
     let num_blocks = blocks.len();
     let mut gen_sets: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
     let mut kill: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
@@ -219,7 +225,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         }
     }
 
-    // Step 4: Iterative backward dataflow
+    // Step 4: Iterative backward dataflow.
     let mut live_in: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
     let mut live_out: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
     let mut changed = true;
@@ -227,7 +233,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
     while changed {
         changed = false;
         for bi in (0..num_blocks).rev() {
-            // live_out[B] = union of live_in[S] for all successors S
+            // live_out[B] = ∪ live_in[S] for all successors S
             let mut new_out = HashSet::new();
             for &succ in &blocks[bi].successors {
                 for var in &live_in[succ] {
@@ -235,7 +241,7 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
                 }
             }
 
-            // live_in[B] = gen[B] | (live_out[B] - kill[B])
+            // live_in[B] = gen[B] ∪ (live_out[B] − kill[B])
             let mut new_in = gen_sets[bi].clone();
             for var in &new_out {
                 if !kill[bi].contains(var) {
@@ -251,15 +257,13 @@ pub fn compute_liveness(instrs: &[Instr], start: usize, end: usize) -> LivenessI
         }
     }
 
-    // Step 5: Expand to per-instruction liveness
+    // Step 5: Expand to per-instruction liveness.
     let mut live_after_vec: Vec<HashSet<Var>> = vec![HashSet::new(); n];
 
     for (bi, block) in blocks.iter().enumerate() {
         let mut live = live_out[bi].clone();
-
         for i in (block.start..=block.end).rev() {
             live_after_vec[i] = live.clone();
-
             if let Some(def) = get_def(&region[i]) {
                 live.remove(&def);
             }

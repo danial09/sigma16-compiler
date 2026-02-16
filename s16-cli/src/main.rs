@@ -1,5 +1,5 @@
 use clap::{Parser, ValueEnum};
-use s16_compiler::backend::sigma16::{AllocatorKind, compile_ir_to_sigma16_with_allocator};
+use s16_compiler::backend::{AllocatorKind, compile_ir_to_sigma16_with_allocator};
 use s16_compiler::compile_to_ir;
 use std::fs;
 use std::path::PathBuf;

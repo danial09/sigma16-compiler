@@ -1,38 +1,89 @@
+//! Sigma16 ABI definitions: register names, calling conventions, and constants.
+
 use std::fmt;
 
+/// A Sigma16 register (R0–R15).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Register {
-    R0, R1, R2, R3, R4, R5, R6, R7,
-    R8, R9, R10, R11, R12, R13, R14, R15,
+    R0,
+    R1,
+    R2,
+    R3,
+    R4,
+    R5,
+    R6,
+    R7,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
 }
 
 impl Register {
-    /// All general purpose registers.
+    /// All general-purpose registers (R1–R12).
     pub const GP_REGS: [Register; 12] = [
-        Register::R1, Register::R2, Register::R3, Register::R4,
-        Register::R5, Register::R6, Register::R7, Register::R8,
-        Register::R9, Register::R10, Register::R11, Register::R12,
+        Register::R1,
+        Register::R2,
+        Register::R3,
+        Register::R4,
+        Register::R5,
+        Register::R6,
+        Register::R7,
+        Register::R8,
+        Register::R9,
+        Register::R10,
+        Register::R11,
+        Register::R12,
     ];
-    
+
+    /// Caller-saved registers (R1–R8).
     pub const CALLER_SAVED: [Register; 8] = [
-        Register::R1, Register::R2, Register::R3, Register::R4,
-        Register::R5, Register::R6, Register::R7, Register::R8,
+        Register::R1,
+        Register::R2,
+        Register::R3,
+        Register::R4,
+        Register::R5,
+        Register::R6,
+        Register::R7,
+        Register::R8,
     ];
 
+    /// Callee-saved registers (R9–R12).
     pub const CALLEE_SAVED: [Register; 4] = [
-        Register::R9, Register::R10, Register::R11, Register::R12,
+        Register::R9,
+        Register::R10,
+        Register::R11,
+        Register::R12,
     ];
 
+    /// Parameter-passing registers (R1–R8).
     pub const PARAM_REGS: [Register; 8] = [
-        Register::R1, Register::R2, Register::R3, Register::R4,
-        Register::R5, Register::R6, Register::R7, Register::R8,
+        Register::R1,
+        Register::R2,
+        Register::R3,
+        Register::R4,
+        Register::R5,
+        Register::R6,
+        Register::R7,
+        Register::R8,
     ];
 
+    /// Stack pointer register.
     pub const STACK_PTR: Register = Register::R14;
+    /// Link (return address) register.
     pub const LINK_REG: Register = Register::R13;
+    /// Hardwired-zero register.
     pub const ZERO_REG: Register = Register::R0;
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Number of GP registers reserved for temporaries (immediates, addresses).
+    pub const TEMP_RESERVE: usize = 2;
+
+    /// Parse a register name like `"R0"` .. `"R15"`.
+    pub fn from_name(s: &str) -> Option<Self> {
         match s {
             "R0" => Some(Register::R0),
             "R1" => Some(Register::R1),
@@ -54,6 +105,7 @@ impl Register {
         }
     }
 
+    /// Return the canonical assembly-text name (`"R0"` .. `"R15"`).
     pub fn as_str(&self) -> &'static str {
         match self {
             Register::R0 => "R0",
@@ -78,6 +130,6 @@ impl Register {
 
 impl fmt::Display for Register {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_str())
+        f.write_str(self.as_str())
     }
 }
