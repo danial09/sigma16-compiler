@@ -130,13 +130,7 @@ impl Codegen {
 
     // ── Conditional branch ──────────────────────────────────────────────
 
-    fn emit_conditional_branch(
-        &mut self,
-        left: &Value,
-        op: &RelOp,
-        right: &Value,
-        target: &str,
-    ) {
+    fn emit_conditional_branch(&mut self, left: &Value, op: &RelOp, right: &Value, target: &str) {
         let (rl, free_l) = self.ensure_in_reg(left);
         let (rr, free_r) = self.ensure_in_reg(right);
         self.push_commented(
@@ -256,13 +250,7 @@ impl Codegen {
 
     // ── Binary assignment (Rhs::Binary) ─────────────────────────────────
 
-    fn emit_assign_binary(
-        &mut self,
-        dst: &Var,
-        op: &ArithOp,
-        left: &Value,
-        right: &Value,
-    ) {
+    fn emit_assign_binary(&mut self, dst: &Var, op: &ArithOp, left: &Value, right: &Value) {
         let is_mod = *op == ArithOp::Mod;
         let bin_comment = format!(
             "{} = {} {} {}",
@@ -405,10 +393,7 @@ impl Codegen {
         let (ri, free_i) = self.ensure_in_reg(index);
         let addr = self.allocate_temp_reg();
         self.note_user_var(base);
-        self.push_commented(
-            S16Instr::lea_label(addr, base),
-            format!("&{}", base),
-        );
+        self.push_commented(S16Instr::lea_label(addr, base), format!("&{}", base));
         self.push_asm(S16Instr::Add {
             d: addr,
             a: addr,
@@ -434,10 +419,7 @@ impl Codegen {
         let (rs, free_s) = self.ensure_in_reg(src);
         let addr = self.allocate_temp_reg();
         self.note_user_var(base);
-        self.push_commented(
-            S16Instr::lea_label(addr, base),
-            format!("&{}", base),
-        );
+        self.push_commented(S16Instr::lea_label(addr, base), format!("&{}", base));
         self.push_asm(S16Instr::Add {
             d: addr,
             a: addr,
@@ -555,6 +537,7 @@ impl Codegen {
         if let Some(func_name) = &self.current_func_name {
             let epilogue_label = format!("ret_{}", func_name);
             self.push_asm(S16Instr::jump_label(&epilogue_label));
+            self.return_jump_count += 1;
         }
     }
 }

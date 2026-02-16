@@ -7,7 +7,7 @@ mod lowering;
 mod program;
 
 use super::abi::Register;
-use super::instruction::{AsmItem, AnnotatedInstr, Disp, S16Instr};
+use super::instruction::{AnnotatedInstr, AsmItem, Disp, S16Instr};
 use super::regalloc::{GreedyRegAllocator, RegAllocator};
 use crate::ir::{Value, Var};
 use std::collections::HashSet;
@@ -53,6 +53,8 @@ pub struct Codegen {
     pub(crate) current_func_end_ir: Option<usize>,
     pub(crate) current_ir: Option<usize>,
     pub(crate) advanced_mode: bool,
+    /// Number of `jump ret_<name>` emitted in the current function body.
+    pub(crate) return_jump_count: usize,
 }
 
 impl Codegen {
@@ -78,6 +80,7 @@ impl Codegen {
             current_func_end_ir: None,
             current_ir: None,
             advanced_mode,
+            return_jump_count: 0,
         }
     }
 
@@ -232,6 +235,7 @@ impl Codegen {
         self.current_func_name = Some(name);
         self.current_func_ir = self.current_ir;
         self.current_func_end_ir = None;
+        self.return_jump_count = 0;
         self.reg.begin_region();
     }
 
@@ -339,8 +343,11 @@ impl Codegen {
             });
         }
 
-        // Epilogue label for early returns.
-        epilogue.push(AsmItem::Label(format!("ret_{}", name), func_end_ir));
+        // Epilogue label — only needed when the body contains jumps to it.
+        let return_jump_count = self.return_jump_count;
+        if return_jump_count > 0 {
+            epilogue.push(AsmItem::Label(format!("ret_{}", name), func_end_ir));
+        }
 
         // Restore callee-saved registers (reverse order).
         for (i, &reg) in used_callee.iter().enumerate().rev() {
@@ -487,11 +494,7 @@ impl Codegen {
         }
     }
 
-    fn flatten_items(
-        items: &[AsmItem],
-        lines: &mut Vec<String>,
-        mapping: &mut Vec<Option<usize>>,
-    ) {
+    fn flatten_items(items: &[AsmItem], lines: &mut Vec<String>, mapping: &mut Vec<Option<usize>>) {
         for item in items {
             match item {
                 AsmItem::Label(name, ir_map) => {

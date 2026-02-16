@@ -179,6 +179,9 @@ impl Gen {
                 }
             }
 
+            // global x — explicitly read a global variable, even from within a function
+            Expr::GlobalVar(_id, name) => Ok(Value::Var(Var::global(name.clone()))),
+
             Expr::Unary {
                 op: ast::UnOp::Not, ..
             } => {

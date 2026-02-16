@@ -27,6 +27,8 @@ pub enum Token {
     Return,
     #[token("array")]
     Array,
+    #[token("global")]
+    Global,
 
     #[token("and")]
     And,

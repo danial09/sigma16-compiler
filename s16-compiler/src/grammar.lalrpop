@@ -22,6 +22,7 @@ extern {
         "Fn"      => Token::Fn,
         "Return"  => Token::Return,
         "Array"   => Token::Array,
+        "Global"  => Token::Global,
         "And"     => Token::And,
         "Or"      => Token::Or,
         "Not"     => Token::Not,
@@ -70,6 +71,7 @@ Stmt: Stmt = {
     ReturnStmt,
     FunctionDef,
     ArrayDeclStmt,
+    GlobalAssignStmt,
     IdentBasedStmt,
     DereferencedAssignStmt,
 };
@@ -117,6 +119,13 @@ ArrayDeclStmt: Stmt = {
         Stmt::ArrayDecl { id, name: name.into(), size: n as usize, initial_values: Some(vals) }
     },
 };
+
+GlobalAssignStmt: Stmt =
+    <l:@L> "Global" <name:"Ident"> "Assign" <value:ExprOr> "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Assign);
+        Stmt::GlobalAssign { id, name: name.into(), value }
+    };
 
 NumberList: Vec<i64> =
     <first:"Number"> <rest:("Comma" <"Number">)*> => {
@@ -172,12 +181,18 @@ ForStmt: Stmt =
 Block: Vec<Stmt> =
     "LBrace" <Stmt*> "RBrace";
 
-ReturnStmt: Stmt =
+ReturnStmt: Stmt = {
     <l:@L> "Return" <value:ExprOr> "Semicolon" <r:@R> => {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
-        Stmt::Return { id, value }
-    };
+        Stmt::Return { id, value: Some(value) }
+    },
+    <l:@L> "Return" "Semicolon" <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Stmt::Return { id, value: None }
+    },
+};
 
 // Standalone function call as statement (ignored return)
 // Handled in IdentBasedStmt
@@ -299,6 +314,12 @@ ExprPrimary: Expr = {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Number);
         Expr::Number(id, n.into())
+    },
+    // global x — read a global variable from within a function
+    <l:@L> "Global" <v:"Ident"> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Variable);
+        Expr::GlobalVar(id, v.into())
     },
     <l:@L> <v:"Ident"> <r:@R> => {
         let id = id_gen.borrow_mut().next();

@@ -156,12 +156,24 @@ impl Gen {
                     if let Some(ctx) = &mut this.fn_ctx {
                         ctx.had_return = true;
                     }
-                    let v = this.eval_as_value(value)?;
-                    this.emit(Instr::Return { value: Some(v) });
+                    let v = match value {
+                        Some(expr) => Some(this.eval_as_value(expr)?),
+                        None => None,
+                    };
+                    this.emit(Instr::Return { value: v });
                     Ok(())
                 })
             }
             Stmt::ExprStmt { id, expr } => self.with_ast_context(*id, None, |this| {
+                // For call expressions used as statements, emit with ret=None (void)
+                if let Expr::Call {
+                    id: call_id,
+                    name,
+                    args,
+                } = expr
+                {
+                    return this.lower_void_call(*call_id, name, args);
+                }
                 let _ = this.eval_as_value(expr)?;
                 Ok(())
             }),
@@ -182,6 +194,9 @@ impl Gen {
                     });
                     Ok(())
                 })
+            }
+            Stmt::GlobalAssign { id, name, value } => {
+                self.with_ast_context(*id, None, |this| this.lower_global_assign(name, value))
             }
         }
     }
@@ -321,6 +336,141 @@ impl Gen {
                 SemanticErrorKind::ArrayUsedAsFunction,
                 call_id,
                 format!("Array '{}' used as function", func_name),
+            )),
+            None => Err(self.make_error(
+                SemanticErrorKind::UndefinedFunction,
+                call_id,
+                format!("Function '{}' is not defined", func_name),
+            )),
+        }
+    }
+
+    /// Lower `global x = expr;` — assign to a global variable even inside a function.
+    fn lower_global_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
+        // Prefer direct binary assignment for arithmetic to avoid unnecessary temps
+        if let Expr::Binary {
+            left, op, right, ..
+        } = rhs
+        {
+            if matches!(
+                op,
+                AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+            ) {
+                let l = self.eval_as_value(left)?;
+                let r = self.eval_as_value(right)?;
+                let op = map_arith(*op);
+                self.emit(Instr::Assign {
+                    dst: Var::global(name.to_string()),
+                    src: Rhs::Binary {
+                        op,
+                        left: l,
+                        right: r,
+                    },
+                });
+                return Ok(());
+            }
+        }
+
+        // Prefer direct call assignment
+        if let Expr::Call {
+            id,
+            name: func_name,
+            args,
+        } = rhs
+        {
+            // Validate call
+            match self.symbols.lookup_global(func_name) {
+                Some(info) if matches!(info.kind, SymbolKind::Function) => {
+                    if let Some(expected) = info.param_count {
+                        if args.len() != expected {
+                            return Err(self.make_error(
+                                SemanticErrorKind::ArgumentCountMismatch,
+                                *id,
+                                format!(
+                                    "Function '{}' expects {} argument{}, got {}",
+                                    func_name,
+                                    expected,
+                                    if expected == 1 { "" } else { "s" },
+                                    args.len()
+                                ),
+                            ));
+                        }
+                    }
+                    let mut vs = Vec::new();
+                    for a in args {
+                        vs.push(self.eval_as_value(a)?);
+                    }
+                    self.emit(Instr::Call {
+                        func: func_name.to_string(),
+                        args: vs,
+                        ret: Some(Var::global(name.to_string())),
+                    });
+                    return Ok(());
+                }
+                Some(_) => {
+                    return Err(self.make_error(
+                        SemanticErrorKind::ArrayUsedAsFunction,
+                        *id,
+                        format!("'{}' is not a function", func_name),
+                    ));
+                }
+                None => {
+                    return Err(self.make_error(
+                        SemanticErrorKind::UndefinedFunction,
+                        *id,
+                        format!("Function '{}' is not defined", func_name),
+                    ));
+                }
+            }
+        }
+
+        let v = self.eval_as_value(rhs)?;
+        self.emit(Instr::Assign {
+            dst: Var::global(name.to_string()),
+            src: Rhs::Value(v),
+        });
+        Ok(())
+    }
+
+    /// Lower a function call used as a statement (no return value needed).
+    fn lower_void_call(
+        &mut self,
+        call_id: AstNodeId,
+        func_name: &str,
+        args: &[Expr],
+    ) -> Result<(), CompileError> {
+        match self.symbols.lookup_global(func_name) {
+            Some(info) if matches!(info.kind, SymbolKind::Function) => {
+                if let Some(expected) = info.param_count {
+                    if args.len() != expected {
+                        return Err(self.make_error(
+                            SemanticErrorKind::ArgumentCountMismatch,
+                            call_id,
+                            format!(
+                                "Function '{}' expects {} argument{}, got {}",
+                                func_name,
+                                expected,
+                                if expected == 1 { "" } else { "s" },
+                                args.len()
+                            ),
+                        ));
+                    }
+                }
+                let mut vs = Vec::new();
+                for a in args {
+                    vs.push(self.eval_as_value(a)?);
+                }
+                self.emit(Instr::Call {
+                    func: func_name.to_string(),
+                    args: vs,
+                    ret: None,
+                });
+                Ok(())
+            }
+            Some(_info) => Err(self.make_error(
+                SemanticErrorKind::ArrayUsedAsFunction,
+                call_id,
+                format!("'{}' is not a function", func_name),
             )),
             None => Err(self.make_error(
                 SemanticErrorKind::UndefinedFunction,
