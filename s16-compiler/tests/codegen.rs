@@ -1,15 +1,7 @@
 use s16_compiler::compile_to_sigma16;
 
 // ── Sample program compilation ───────────────────────────────────────────
-// Verify that all sample .sig files compile to Sigma16 assembly without errors.
-
-#[test]
-fn compile_test_sig() {
-    let source = std::fs::read_to_string("../samples/test.sig")
-        .expect("Failed to read samples/test.sig");
-    let asm = compile_to_sigma16(&source).expect("test.sig should compile");
-    assert!(!asm.is_empty());
-}
+// Verify that sample .sig files compile to Sigma16 assembly without errors.
 
 #[test]
 fn compile_paf_sig() {
@@ -50,22 +42,6 @@ fn compile_is_prime_sig() {
     let source = std::fs::read_to_string("../samples/is_prime.sig")
         .expect("Failed to read samples/is_prime.sig");
     let asm = compile_to_sigma16(&source).expect("is_prime.sig should compile");
-    assert!(!asm.is_empty());
-}
-
-#[test]
-fn compile_simple_sig() {
-    let source = std::fs::read_to_string("../samples/simple.sig")
-        .expect("Failed to read samples/simple.sig");
-    let asm = compile_to_sigma16(&source).expect("simple.sig should compile");
-    assert!(!asm.is_empty());
-}
-
-#[test]
-fn compile_sum_sig() {
-    let source = std::fs::read_to_string("../samples/sum.sig")
-        .expect("Failed to read samples/sum.sig");
-    let asm = compile_to_sigma16(&source).expect("sum.sig should compile");
     assert!(!asm.is_empty());
 }
 

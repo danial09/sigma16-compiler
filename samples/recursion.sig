@@ -16,5 +16,3 @@ x = 5;
 
 // Compute factorial(x) and store in result
 result = fact(x);
-
-
