@@ -105,6 +105,102 @@ pub enum Token {
     String(String),
 }
 
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Token::If => write!(f, "if"),
+            Token::Else => write!(f, "else"),
+            Token::While => write!(f, "while"),
+            Token::For => write!(f, "for"),
+            Token::From => write!(f, "from"),
+            Token::To => write!(f, "to"),
+            Token::Fn => write!(f, "fn"),
+            Token::Return => write!(f, "return"),
+            Token::Array => write!(f, "array"),
+            Token::Global => write!(f, "global"),
+            Token::And => write!(f, "and"),
+            Token::Or => write!(f, "or"),
+            Token::Not => write!(f, "not"),
+            Token::Ident(s) => write!(f, "'{}'", s),
+            Token::Number(n) => write!(f, "{}", n),
+            Token::Eq => write!(f, "=="),
+            Token::Neq => write!(f, "!="),
+            Token::Assign => write!(f, "="),
+            Token::Plus => write!(f, "+"),
+            Token::Minus => write!(f, "-"),
+            Token::Mul => write!(f, "*"),
+            Token::Div => write!(f, "/"),
+            Token::Mod => write!(f, "%"),
+            Token::Gt => write!(f, ">"),
+            Token::Lt => write!(f, "<"),
+            Token::Ge => write!(f, ">="),
+            Token::Le => write!(f, "<="),
+            Token::LBrace => write!(f, "{{"),
+            Token::RBrace => write!(f, "}}"),
+            Token::LBracket => write!(f, "["),
+            Token::RBracket => write!(f, "]"),
+            Token::LParen => write!(f, "("),
+            Token::RParen => write!(f, ")"),
+            Token::Comma => write!(f, ","),
+            Token::Amp => write!(f, "&"),
+            Token::Pipe => write!(f, "|"),
+            Token::Caret => write!(f, "^"),
+            Token::Tilde => write!(f, "~"),
+            Token::Semicolon => write!(f, ";"),
+            Token::String(s) => write!(f, "\"{}\"", s),
+        }
+    }
+}
+
+/// Map a LALRPOP expected-token name (e.g. `"Semicolon"`) to a friendly symbol.
+pub fn friendly_token_name(name: &str) -> String {
+    // LALRPOP wraps names in quotes
+    let inner = name.trim_matches('"');
+    match inner {
+        "If" => "'if'".into(),
+        "Else" => "'else'".into(),
+        "While" => "'while'".into(),
+        "For" => "'for'".into(),
+        "From" => "'from'".into(),
+        "To" => "'to'".into(),
+        "Fn" => "'fn'".into(),
+        "Return" => "'return'".into(),
+        "Array" => "'array'".into(),
+        "Global" => "'global'".into(),
+        "And" => "'and'".into(),
+        "Or" => "'or'".into(),
+        "Not" => "'not'".into(),
+        "Ident" => "identifier".into(),
+        "Number" => "number".into(),
+        "Eq" => "'=='".into(),
+        "Neq" => "'!='".into(),
+        "Assign" => "'='".into(),
+        "Plus" => "'+'".into(),
+        "Minus" => "'-'".into(),
+        "Mul" => "'*'".into(),
+        "Div" => "'/'".into(),
+        "Mod" => "'%'".into(),
+        "Gt" => "'>'".into(),
+        "Lt" => "'<'".into(),
+        "Ge" => "'>='".into(),
+        "Le" => "'<='".into(),
+        "LBrace" => "'{'".into(),
+        "RBrace" => "'}'".into(),
+        "LBracket" => "'['".into(),
+        "RBracket" => "']'".into(),
+        "LParen" => "'('".into(),
+        "RParen" => "')'".into(),
+        "Comma" => "','".into(),
+        "Amp" => "'&'".into(),
+        "Pipe" => "'|'".into(),
+        "Caret" => "'^'".into(),
+        "Tilde" => "'~'".into(),
+        "Semicolon" => "';'".into(),
+        "String" => "string".into(),
+        other => other.to_string(),
+    }
+}
+
 /// Custom error type for lexical errors
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexicalError {
@@ -127,8 +223,8 @@ impl fmt::Display for LexicalError {
 
 impl std::error::Error for LexicalError {}
 
-/// Convert a byte position to line and column numbers
-fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
+/// Convert a byte position to line and column numbers (1-based)
+pub fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;
 
@@ -148,7 +244,7 @@ fn position_to_line_col(source: &str, position: usize) -> (usize, usize) {
 }
 
 /// Get context around an error position (the line containing the error)
-fn get_error_context(source: &str, position: usize) -> String {
+pub fn get_error_context(source: &str, position: usize) -> String {
     let line_start = source[..position]
         .rfind('\n')
         .map(|pos| pos + 1)

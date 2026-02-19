@@ -235,39 +235,62 @@ pub fn parse_to_ast(source: &str) -> Result<ParsedAst, CompileError> {
         .map_err(|e| {
             use lalrpop_util::ParseError;
 
+            /// Build a friendly comma-separated "expected" list
+            fn fmt_expected(expected: &[String]) -> String {
+                expected
+                    .iter()
+                    .map(|s| lexer::friendly_token_name(s))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+
+            /// Helper: create CompileError::Parse with line/col from byte position
+            fn make_parse_error(source: &str, position: usize, message: String) -> CompileError {
+                let (line, col) = lexer::position_to_line_col(source, position);
+                let context = lexer::get_error_context(source, position);
+                CompileError::Parse {
+                    line,
+                    col,
+                    context,
+                    message,
+                }
+            }
+
             match e {
-                ParseError::InvalidToken { location } => CompileError::Parse {
+                ParseError::InvalidToken { location } => {
+                    make_parse_error(source, location, "Invalid token".to_string())
+                }
+                ParseError::UnrecognizedEof { location, expected } => make_parse_error(
+                    source,
                     location,
-                    message: "Invalid token".to_string(),
-                },
-                ParseError::UnrecognizedEof { location, expected } => CompileError::Parse {
-                    location,
-                    message: format!(
-                        "Unexpected end of file. Expected one of: {}",
-                        expected.join(", ")
+                    format!(
+                        "Unexpected end of input. Expected one of: {}",
+                        fmt_expected(&expected)
                     ),
-                },
+                ),
                 ParseError::UnrecognizedToken {
-                    token: (start, tok, end),
+                    token: (start, tok, _end),
                     expected,
-                } => CompileError::Parse {
-                    location: start,
-                    message: format!(
-                        "Unexpected token '{:?}' at position {}..{}. Expected one of: {}",
+                } => make_parse_error(
+                    source,
+                    start,
+                    format!(
+                        "Unexpected token '{}'. Expected one of: {}",
                         tok,
-                        start,
-                        end,
-                        expected.join(", ")
+                        fmt_expected(&expected)
                     ),
-                },
+                ),
                 ParseError::ExtraToken {
-                    token: (start, tok, end),
-                } => CompileError::Parse {
-                    location: start,
-                    message: format!("Extra token '{:?}' at position {}..{}", tok, start, end),
-                },
+                    token: (start, tok, _end),
+                } => make_parse_error(source, start, format!("Extra token '{}'", tok)),
                 ParseError::User { error } => {
-                    CompileError::ParseGeneric(format!("Lexical error: {}", error))
+                    // Lexical errors already carry line/col
+                    CompileError::Parse {
+                        line: error.line,
+                        col: error.column,
+                        context: error.context.clone(),
+                        message: format!("Unexpected character '{}'", error.unexpected_char),
+                    }
                 }
             }
         })?;
