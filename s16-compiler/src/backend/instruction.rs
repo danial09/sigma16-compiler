@@ -145,6 +145,16 @@ pub enum S16Instr {
         disp: Disp,
         idx: Register,
     },
+
+    // ── Bitwise pseudo-instructions ─────────────────────────────────────
+    /// `invw Rd` — bitwise NOT (in-place)
+    Invw { d: Register },
+    /// `andw Rd,Rb` — bitwise AND (Rd := Rd AND Rb)
+    Andw { d: Register, b: Register },
+    /// `orw Rd,Rb` — bitwise OR (Rd := Rd OR Rb)
+    Orw { d: Register, b: Register },
+    /// `xorw Rd,Rb` — bitwise XOR (Rd := Rd XOR Rb)
+    Xorw { d: Register, b: Register },
 }
 
 // ── Convenience constructors ────────────────────────────────────────────
@@ -251,6 +261,11 @@ impl S16Instr {
 
             S16Instr::Cmp { a, b } => *a == reg || *b == reg,
 
+            S16Instr::Invw { d } => *d == reg,
+            S16Instr::Andw { d, b } | S16Instr::Orw { d, b } | S16Instr::Xorw { d, b } => {
+                *d == reg || *b == reg
+            }
+
             S16Instr::Lea { d, idx, .. }
             | S16Instr::Load { d, idx, .. }
             | S16Instr::Store { d, idx, .. }
@@ -275,7 +290,11 @@ impl S16Instr {
             | S16Instr::Trap { d, .. }
             | S16Instr::Lea { d, .. }
             | S16Instr::Load { d, .. }
-            | S16Instr::Jal { d, .. } => Some(*d),
+            | S16Instr::Jal { d, .. }
+            | S16Instr::Invw { d }
+            | S16Instr::Andw { d, .. }
+            | S16Instr::Orw { d, .. }
+            | S16Instr::Xorw { d, .. } => Some(*d),
             S16Instr::Store { .. }
             | S16Instr::Jump { .. }
             | S16Instr::JumpCond { .. }
@@ -320,6 +339,12 @@ impl fmt::Display for S16Instr {
             S16Instr::JumpCond { cond, disp, idx } => {
                 write!(f, "  {} {disp}[{idx}]", cond.mnemonic())
             }
+
+            // Bitwise pseudo-instructions
+            S16Instr::Invw { d } => write!(f, "  invw {d}"),
+            S16Instr::Andw { d, b } => write!(f, "  andw {d},{b}"),
+            S16Instr::Orw { d, b } => write!(f, "  orw {d},{b}"),
+            S16Instr::Xorw { d, b } => write!(f, "  xorw {d},{b}"),
         }
     }
 }

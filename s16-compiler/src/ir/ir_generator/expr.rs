@@ -190,6 +190,23 @@ impl Gen {
             }
 
             Expr::Unary {
+                op: ast::UnOp::BitNot,
+                operand,
+                ..
+            } => {
+                let v = this.eval_as_value(operand)?;
+                let tmp = this.new_temp();
+                this.emit(Instr::Assign {
+                    dst: tmp.clone(),
+                    src: Rhs::Unary {
+                        op: UnaryArithOp::BitNot,
+                        operand: v,
+                    },
+                });
+                Ok(Value::Var(tmp))
+            }
+
+            Expr::Unary {
                 op: ast::UnOp::Neg,
                 operand,
                 ..
@@ -212,7 +229,14 @@ impl Gen {
             } => {
                 if matches!(
                     op,
-                    AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+                    AstBinOp::Add
+                        | AstBinOp::Sub
+                        | AstBinOp::Mul
+                        | AstBinOp::Div
+                        | AstBinOp::Mod
+                        | AstBinOp::BitAnd
+                        | AstBinOp::BitOr
+                        | AstBinOp::BitXor
                 ) {
                     let lv = this.eval_as_value(left)?;
                     let rv = this.eval_as_value(right)?;
@@ -367,6 +391,9 @@ pub fn map_arith(op: AstBinOp) -> ArithOp {
         AstBinOp::Mul => ArithOp::Mul,
         AstBinOp::Div => ArithOp::Div,
         AstBinOp::Mod => ArithOp::Mod,
+        AstBinOp::BitAnd => ArithOp::BitAnd,
+        AstBinOp::BitOr => ArithOp::BitOr,
+        AstBinOp::BitXor => ArithOp::BitXor,
         _ => unreachable!(),
     }
 }

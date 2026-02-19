@@ -148,12 +148,16 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Not,
     Neg,
+    BitNot,
     // Note: address-of and deref are represented as dedicated Expr variants
 }
 

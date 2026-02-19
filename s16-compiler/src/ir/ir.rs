@@ -229,12 +229,29 @@ pub enum Rhs {
         left: Value,
         right: Value,
     },
+    Unary {
+        op: UnaryArithOp,
+        operand: Value,
+    },
 }
 impl std::fmt::Display for Rhs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Rhs::Value(v) => write!(f, "{v}"),
             Rhs::Binary { op, left, right } => write!(f, "{} {} {}", left, op, right),
+            Rhs::Unary { op, operand } => write!(f, "{}{}", op, operand),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryArithOp {
+    BitNot,
+}
+impl std::fmt::Display for UnaryArithOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnaryArithOp::BitNot => write!(f, "~"),
         }
     }
 }
@@ -260,6 +277,9 @@ pub enum ArithOp {
     Mul,
     Div,
     Mod,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 impl std::fmt::Display for ArithOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -272,6 +292,9 @@ impl std::fmt::Display for ArithOp {
                 ArithOp::Mul => "*",
                 ArithOp::Div => "/",
                 ArithOp::Mod => "%",
+                ArithOp::BitAnd => "&",
+                ArithOp::BitOr => "|",
+                ArithOp::BitXor => "^",
             }
         )
     }

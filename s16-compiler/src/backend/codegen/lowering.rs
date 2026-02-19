@@ -6,7 +6,7 @@
 use super::Codegen;
 use crate::backend::abi::Register;
 use crate::backend::instruction::{Cond, Disp, S16Instr};
-use crate::ir::{ArithOp, Instr, RelOp, Rhs, Value, Var, VarKind};
+use crate::ir::{ArithOp, Instr, RelOp, Rhs, UnaryArithOp, Value, Var, VarKind};
 
 /// Short description of an IR value for assembly comments.
 fn describe_val(v: &Value) -> String {
@@ -25,6 +25,9 @@ fn op_sym(op: &ArithOp) -> &'static str {
         ArithOp::Mul => "*",
         ArithOp::Div => "/",
         ArithOp::Mod => "%",
+        ArithOp::BitAnd => "&",
+        ArithOp::BitOr => "|",
+        ArithOp::BitXor => "^",
     }
 }
 
@@ -78,6 +81,7 @@ impl Codegen {
             Instr::Assign { dst, src } => match src {
                 Rhs::Value(v) => self.emit_assign_value(dst, v),
                 Rhs::Binary { op, left, right } => self.emit_assign_binary(dst, op, left, right),
+                Rhs::Unary { op, operand } => self.emit_assign_unary(dst, op, operand),
             },
             Instr::Load { dst, addr } => {
                 let (ra, free_a) = self.ensure_in_reg(addr);
@@ -338,6 +342,19 @@ impl Codegen {
                     b: rr,
                 },
                 ArithOp::Mod => unreachable!(),
+                ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor => {
+                    // Bitwise pseudo-instructions are 2-address: Rd := Rd OP Rb.
+                    // Copy left operand into Rd first, then apply the operation.
+                    if rd != rl {
+                        self.push_asm(S16Instr::mov(rd, rl));
+                    }
+                    match op {
+                        ArithOp::BitAnd => S16Instr::Andw { d: rd, b: rr },
+                        ArithOp::BitOr => S16Instr::Orw { d: rd, b: rr },
+                        ArithOp::BitXor => S16Instr::Xorw { d: rd, b: rr },
+                        _ => unreachable!(),
+                    }
+                }
             };
             self.push_commented(instr, &bin_comment);
         }
@@ -350,6 +367,36 @@ impl Codegen {
         }
         if free_r && rr != rd {
             self.reg.free_reg(rr);
+        }
+    }
+
+    // ── Unary assignment (Rhs::Unary) ───────────────────────────────────
+
+    fn emit_assign_unary(&mut self, dst: &Var, op: &UnaryArithOp, operand: &Value) {
+        let comment = format!("{} = ~{}", dst.name, describe_val(operand));
+
+        if dst.kind == VarKind::Global {
+            self.note_user_var(&dst.name);
+        }
+
+        let (rs, free_s) = self.ensure_in_reg(operand);
+        let rd = self.prepare_def_reg(dst);
+
+        // invw is in-place, so copy operand into Rd first if needed.
+        if rd != rs {
+            self.push_asm(S16Instr::mov(rd, rs));
+        }
+
+        let instr = match op {
+            UnaryArithOp::BitNot => S16Instr::Invw { d: rd },
+        };
+        self.push_commented(instr, &comment);
+
+        self.reg.bind_var_to_reg(dst.clone(), rd);
+        self.reg.mark_dirty(dst);
+
+        if free_s && rs != rd {
+            self.reg.free_reg(rs);
         }
     }
 

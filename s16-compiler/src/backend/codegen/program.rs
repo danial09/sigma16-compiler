@@ -73,6 +73,9 @@ fn collect_function_vars(instrs: &[Instr], start: usize, end: usize) -> HashSet<
                         add_val(&mut vars, left);
                         add_val(&mut vars, right);
                     }
+                    Rhs::Unary { operand, .. } => {
+                        add_val(&mut vars, operand);
+                    }
                 }
             }
             Instr::IfCmpGoto { left, right, .. } => {
@@ -223,8 +226,7 @@ impl Codegen {
                     let leaf = is_leaf_function(&ir.instrs, ir_index, end);
                     let fixed = compute_fixed_assignments(&func_vars, params, leaf);
 
-                    let func_liveness =
-                        liveness::compute_liveness(&ir.instrs, ir_index, end);
+                    let func_liveness = liveness::compute_liveness(&ir.instrs, ir_index, end);
 
                     // emit_instr processes FuncStart (calls begin_region), then
                     // we install liveness and fixed assignments.
@@ -250,8 +252,7 @@ impl Codegen {
                     if next < ir.instrs.len() {
                         let end = find_toplevel_end(&ir.instrs, next);
                         if end > next {
-                            let info =
-                                liveness::compute_liveness(&ir.instrs, next, end);
+                            let info = liveness::compute_liveness(&ir.instrs, next, end);
                             self.reg.set_liveness(info);
                         }
                     }
@@ -263,11 +264,11 @@ impl Codegen {
             self.reg.clear_temp_busy();
         }
 
-        // Final flush.
+        // Final flush — these are program-end writebacks, not tied to any
+        // specific IR instruction, so clear the mapping context.
+        self.current_ir = None;
         let mut out = Vec::new();
         self.reg.flush_all(&mut out);
         self.drain_regalloc(out);
-
-        self.current_ir = None;
     }
 }

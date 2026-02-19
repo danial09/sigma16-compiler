@@ -89,6 +89,12 @@ pub enum Token {
     Comma,
     #[token("&")]
     Amp,
+    #[token("|")]
+    Pipe,
+    #[token("^")]
+    Caret,
+    #[token("~")]
+    Tilde,
     #[token(";")]
     Semicolon,
 

@@ -250,6 +250,24 @@ impl Gen {
     }
 
     pub fn lower_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
+        // Prefer direct unary assignment to avoid unnecessary temps
+        if let Expr::Unary {
+            op: crate::ir::ast::UnOp::BitNot,
+            operand,
+            ..
+        } = rhs
+        {
+            let v = self.eval_as_value(operand)?;
+            self.emit(Instr::Assign {
+                dst: self.get_var(name.to_string()),
+                src: Rhs::Unary {
+                    op: UnaryArithOp::BitNot,
+                    operand: v,
+                },
+            });
+            return Ok(());
+        }
+
         // Prefer direct binary assignment for arithmetic to avoid unnecessary temps
         if let Expr::Binary {
             left, op, right, ..
@@ -257,7 +275,14 @@ impl Gen {
         {
             if matches!(
                 op,
-                AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+                AstBinOp::Add
+                    | AstBinOp::Sub
+                    | AstBinOp::Mul
+                    | AstBinOp::Div
+                    | AstBinOp::Mod
+                    | AstBinOp::BitAnd
+                    | AstBinOp::BitOr
+                    | AstBinOp::BitXor
             ) {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
@@ -347,6 +372,24 @@ impl Gen {
 
     /// Lower `global x = expr;` — assign to a global variable even inside a function.
     fn lower_global_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
+        // Prefer direct unary assignment to avoid unnecessary temps
+        if let Expr::Unary {
+            op: crate::ir::ast::UnOp::BitNot,
+            operand,
+            ..
+        } = rhs
+        {
+            let v = self.eval_as_value(operand)?;
+            self.emit(Instr::Assign {
+                dst: Var::global(name.to_string()),
+                src: Rhs::Unary {
+                    op: UnaryArithOp::BitNot,
+                    operand: v,
+                },
+            });
+            return Ok(());
+        }
+
         // Prefer direct binary assignment for arithmetic to avoid unnecessary temps
         if let Expr::Binary {
             left, op, right, ..
@@ -354,7 +397,14 @@ impl Gen {
         {
             if matches!(
                 op,
-                AstBinOp::Add | AstBinOp::Sub | AstBinOp::Mul | AstBinOp::Div | AstBinOp::Mod
+                AstBinOp::Add
+                    | AstBinOp::Sub
+                    | AstBinOp::Mul
+                    | AstBinOp::Div
+                    | AstBinOp::Mod
+                    | AstBinOp::BitAnd
+                    | AstBinOp::BitOr
+                    | AstBinOp::BitXor
             ) {
                 let l = self.eval_as_value(left)?;
                 let r = self.eval_as_value(right)?;
