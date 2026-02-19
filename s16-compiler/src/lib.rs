@@ -1,23 +1,19 @@
 pub mod frontend;
 // pub mod ast;
-pub mod ir;
 pub mod backend;
+pub mod ir;
 
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CompileError {
-    #[error("Lexical error: {0}")]
-    Lexical(#[from] frontend::lexer::LexicalError),
-
-    #[error("Parse error at position {location}: {message}")]
+    #[error("ParseError ({line}:{col}) - {message}")]
     Parse {
-        location: usize,
+        line: usize,
+        col: usize,
+        context: String,
         message: String,
     },
-
-    #[error("Parse error: {0}")]
-    ParseGeneric(String),
 
     #[error("SemanticError:{kind} ({line}:{col}) - {message}")]
     Semantic {
@@ -85,7 +81,9 @@ pub fn compile_to_ir(source: &str) -> Result<ir::ProgramIR, CompileError> {
     // Initialize source index and register AST spans
     ir_prog.source_map.init_source_index(source);
     for s in ast_spans {
-        ir_prog.source_map.add_ast_span(s.id, s.start, s.end, s.kind);
+        ir_prog
+            .source_map
+            .add_ast_span(s.id, s.start, s.end, s.kind);
     }
     // Populate mapping spans from the registered AST spans for robust lookups
     ir_prog.source_map.finalize();
