@@ -52,6 +52,9 @@ extern {
         "RBracket" => Token::RBracket,
         "Comma"    => Token::Comma,
         "Amp"      => Token::Amp,
+        "Pipe"     => Token::Pipe,
+        "Caret"    => Token::Caret,
+        "Tilde"    => Token::Tilde,
         "Semicolon" => Token::Semicolon,
         "String"   => Token::String(<String>),
     }
@@ -211,10 +214,40 @@ ExprOr: Expr = {
 
 // Logical AND (higher precedence than OR)
 ExprAnd: Expr = {
-    <l:@L> <left:ExprAnd> "And" <right:ExprCmp> <r:@R> => {
+    <l:@L> <left:ExprAnd> "And" <right:ExprBitOr> <r:@R> => {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
         Expr::Binary { id, op: BinOp::And, left: Box::new(left), right: Box::new(right) }
+    },
+    ExprBitOr,
+};
+
+// Bitwise OR (higher precedence than logical AND)
+ExprBitOr: Expr = {
+    <l:@L> <left:ExprBitOr> "Pipe" <right:ExprBitXor> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
+        Expr::Binary { id, op: BinOp::BitOr, left: Box::new(left), right: Box::new(right) }
+    },
+    ExprBitXor,
+};
+
+// Bitwise XOR (higher precedence than bitwise OR)
+ExprBitXor: Expr = {
+    <l:@L> <left:ExprBitXor> "Caret" <right:ExprBitAnd> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
+        Expr::Binary { id, op: BinOp::BitXor, left: Box::new(left), right: Box::new(right) }
+    },
+    ExprBitAnd,
+};
+
+// Bitwise AND (higher precedence than bitwise XOR)
+ExprBitAnd: Expr = {
+    <l:@L> <left:ExprBitAnd> "Amp" <right:ExprCmp> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Binary);
+        Expr::Binary { id, op: BinOp::BitAnd, left: Box::new(left), right: Box::new(right) }
     },
     ExprCmp,
 };
@@ -280,6 +313,11 @@ ExprUnary: Expr = {
         let id = id_gen.borrow_mut().next();
         spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
         Expr::Unary { id, op: UnOp::Neg, operand: Box::new(operand) }
+    },
+    <l:@L> "Tilde" <operand:ExprUnary> <r:@R> => {
+        let id = id_gen.borrow_mut().next();
+        spans.borrow_mut().add(id, l, r, AstNodeKind::Unary);
+        Expr::Unary { id, op: UnOp::BitNot, operand: Box::new(operand) }
     },
     // Address-of a variable
     <l:@L> "Amp" <v:"Ident"> <r:@R> => {

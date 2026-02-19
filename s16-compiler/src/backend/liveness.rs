@@ -73,6 +73,12 @@ fn get_uses(instr: &Instr) -> Vec<Var> {
             add_val(left);
             add_val(right);
         }
+        Instr::Assign {
+            src: Rhs::Unary { operand, .. },
+            ..
+        } => {
+            add_val(operand);
+        }
         Instr::IfCmpGoto { left, right, .. } => {
             add_val(left);
             add_val(right);
