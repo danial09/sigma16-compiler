@@ -87,10 +87,56 @@ impl Gen {
         }
     }
 
-    pub fn new_label(&mut self) -> String {
-        let l = format!("L{}", self.label_count);
+    /// Generate a new unique label with optional descriptive hint.
+    /// If hint is provided, generates labels like: L0_if_else, L1_while_done, etc.
+    /// If hint is empty, generates: L0, L1, L2, etc. (for backward compatibility)
+    pub fn new_label(&mut self, hint: &str) -> String {
+        let l = if hint.is_empty() {
+            format!("L{}", self.label_count)
+        } else {
+            format!("L{}_{}", self.label_count, hint)
+        };
         self.label_count += 1;
         l
+    }
+
+    // Convenience methods for common label types
+    pub fn new_if_then_label(&mut self) -> String {
+        self.new_label("if_then")
+    }
+    pub fn new_if_else_label(&mut self) -> String {
+        self.new_label("if_else")
+    }
+    pub fn new_if_done_label(&mut self) -> String {
+        self.new_label("if_done")
+    }
+
+    pub fn new_while_cond_label(&mut self) -> String {
+        self.new_label("while_cond")
+    }
+    pub fn new_while_done_label(&mut self) -> String {
+        self.new_label("while_done")
+    }
+
+    pub fn new_for_cond_label(&mut self) -> String {
+        self.new_label("for_cond")
+    }
+    pub fn new_for_done_label(&mut self) -> String {
+        self.new_label("for_done")
+    }
+
+    pub fn new_bool_true_label(&mut self) -> String {
+        self.new_label("bool_true")
+    }
+    pub fn new_bool_end_label(&mut self) -> String {
+        self.new_label("bool_end")
+    }
+
+    pub fn new_cond_mid_label(&mut self) -> String {
+        self.new_label("cond_mid")
+    }
+    pub fn new_cond_skip_label(&mut self) -> String {
+        self.new_label("cond_skip")
     }
 
     pub fn emit(&mut self, i: Instr) {

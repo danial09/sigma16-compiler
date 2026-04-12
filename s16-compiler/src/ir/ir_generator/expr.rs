@@ -28,7 +28,7 @@ impl Gen {
                 right,
                 ..
             } => {
-                let mid = self.new_label();
+                let mid = self.new_cond_mid_label();
                 self.lower_condition_branch_false(left, &mid)?;
                 self.lower_condition_branch_false(right, target)?;
                 self.emit(Instr::Label(mid));
@@ -79,7 +79,7 @@ impl Gen {
                 right,
                 ..
             } => {
-                let after = self.new_label();
+                let after = self.new_cond_skip_label();
                 self.lower_condition_branch_false(left, &after)?;
                 self.lower_condition_branch_true(right, target)?;
                 self.emit(Instr::Label(after));
@@ -130,8 +130,8 @@ impl Gen {
     /// Materialize a boolean expression to a temp containing 0 or 1 (with short-circuit where possible)
     pub fn lower_bool_expr(&mut self, cond: &Expr) -> Result<Var, CompileError> {
         let tmp = self.new_temp();
-        let true_label = self.new_label();
-        let end_label = self.new_label();
+        let true_label = self.new_bool_true_label();
+        let end_label = self.new_bool_end_label();
 
         self.lower_condition_branch_true(cond, &true_label)?;
 

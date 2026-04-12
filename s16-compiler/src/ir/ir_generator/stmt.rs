@@ -537,8 +537,8 @@ impl Gen {
         then_blk: &[Stmt],
         else_blk: Option<&Vec<Stmt>>,
     ) -> Result<(), CompileError> {
-        let endif = self.new_label();
-        let else_label = else_blk.map(|_| self.new_label());
+        let endif = self.new_if_done_label();
+        let else_label = else_blk.map(|_| self.new_if_else_label());
         let false_target = else_label.as_deref().unwrap_or(&endif);
 
         self.with_ast_context(ast_id, Some(ControlFlowComponent::Condition), |this| {
@@ -594,8 +594,8 @@ impl Gen {
         cond: &Expr,
         body: &[Stmt],
     ) -> Result<(), CompileError> {
-        let start = self.new_label();
-        let end = self.new_label();
+        let start = self.new_while_cond_label();
+        let end = self.new_while_done_label();
 
         // Map the loop entry label to the while AST node
         self.with_ast_context(
@@ -642,8 +642,8 @@ impl Gen {
         to: &Expr,
         body: &[Stmt],
     ) -> Result<(), CompileError> {
-        let start = self.new_label();
-        let end = self.new_label();
+        let start = self.new_for_cond_label();
+        let end = self.new_for_done_label();
 
         // Loop variable follows the global-by-default rule
         let var_v = self.get_var(var.to_string());
