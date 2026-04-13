@@ -1,0 +1,106 @@
+(* ===== Entry Point ===== *)
+
+Program         ::= { Stmt }
+
+(* ===== Statements ===== *)
+
+Stmt            ::= IfStmt
+                  | WhileStmt
+                  | ForStmt
+                  | ReturnStmt
+                  | FunctionDef
+                  | ArrayDeclStmt
+                  | GlobalAssignStmt
+                  | IdentBasedStmt
+                  | DereferencedAssignStmt
+
+IdentBasedStmt  ::= ident "=" string ";"
+                  | ident "=" ExprOr ";"
+                  | ident "[" ExprOr "]" "=" ExprOr ";"
+                  | ident "(" [ ArgList ] ")" ";"
+
+DereferencedAssignStmt
+                ::= "*" ExprUnary "=" ExprOr ";"
+
+ArrayDeclStmt   ::= "array" ident "[" number "]" ";"
+                  | "array" ident "[" number "]" "=" "[" NumberList "]" ";"
+
+GlobalAssignStmt ::= "global" ident "=" ExprOr ";"
+
+FunctionDef     ::= "fn" ident "(" [ ParamList ] ")" Block
+
+IfStmt          ::= "if" ExprOr Block
+                  | "if" ExprOr Block "else" Block
+
+WhileStmt       ::= "while" ExprOr Block
+
+ForStmt         ::= "for" ident "from" ExprOr "to" ExprOr Block
+
+ReturnStmt      ::= "return" ExprOr ";"
+                  | "return" ";"
+
+Block           ::= "{" { Stmt } "}"
+
+(* ===== Lists ===== *)
+
+ParamList       ::= ident { "," ident }
+ArgList         ::= ExprOr { "," ExprOr }
+NumberList      ::= number { "," number }
+
+(* ===== Expressions - precedence lowest to highest ===== *)
+
+ExprOr          ::= ExprOr "or" ExprAnd       (* left-assoc *)
+                  | ExprAnd
+
+ExprAnd         ::= ExprAnd "and" ExprBitOr   (* left-assoc *)
+                  | ExprBitOr
+
+ExprBitOr       ::= ExprBitOr "|" ExprBitXor  (* left-assoc *)
+                  | ExprBitXor
+
+ExprBitXor      ::= ExprBitXor "^" ExprBitAnd (* left-assoc *)
+                  | ExprBitAnd
+
+ExprBitAnd      ::= ExprBitAnd "&" ExprCmp    (* left-assoc *)
+                  | ExprCmp
+
+ExprCmp         ::= ExprAdd CmpOp ExprAdd      (* non-assoc *)
+                  | ExprAdd
+
+CmpOp           ::= "==" | "!=" | "<" | ">" | "<=" | ">="
+
+ExprAdd         ::= ExprAdd AddOp ExprMul      (* left-assoc *)
+                  | ExprMul
+
+AddOp           ::= "+" | "-"
+
+ExprMul         ::= ExprMul MulOp ExprUnary    (* left-assoc *)
+                  | ExprUnary
+
+MulOp           ::= "*" | "/" | "%"
+
+ExprUnary       ::= "not" ExprUnary            (* right-assoc *)
+                  | "-"   ExprUnary
+                  | "~"   ExprUnary
+                  | "&"   ident                (* address-of *)
+                  | "*"   ExprUnary            (* dereference *)
+                  | ExprPrimary
+
+ExprPrimary     ::= ident "[" ExprOr "]"       (* index *)
+                  | ident "(" [ ArgList ] ")"  (* call *)
+                  | number
+                  | "global" ident
+                  | ident
+                  | "(" ExprOr ")"
+
+(* ===== Assignment Target ===== *)
+
+LValue          ::= ident
+                  | "*" ExprUnary
+                  | ident "[" ExprOr "]"
+
+(* ===== Terminals ===== *)
+
+(* ident  : identifier [a-zA-Z_][a-zA-Z0-9_]*  *)
+(* number : integer literal (i64)               *)
+(* string : string literal                      *)
