@@ -194,6 +194,45 @@ impl Codegen {
             }
         }
 
+        // Direct materialisation of leaf values (non-zero immediates and
+        // address-of expressions) into the destination register.  Avoids the
+        // wasteful `lea Rtmp, ...; mov Rdst, Rtmp` sequence that would
+        // otherwise come from `ensure_in_reg` allocating a fresh temp.
+        //
+        // Imm(0) is intentionally left to the existing path: in non-resident
+        // mode it elides to a free `dst → R0` binding, which is strictly
+        // better than emitting `add Rd, R0, R0`.
+        let basic_global_path = dst.kind == VarKind::Global && !self.advanced_mode;
+        if !basic_global_path {
+            match v {
+                Value::Imm(imm) if *imm != 0 => {
+                    if dst.kind == VarKind::Global {
+                        self.note_user_var(&dst.name);
+                    }
+                    let rd = self.prepare_def_reg(dst);
+                    self.push_commented(S16Instr::lea_imm(rd, *imm), &assign_comment);
+                    self.reg.bind_var_to_reg(dst.clone(), rd);
+                    self.reg.mark_dirty(dst);
+                    return;
+                }
+                Value::AddrOf(name) => {
+                    if dst.kind == VarKind::Global {
+                        self.note_user_var(&dst.name);
+                    }
+                    self.note_user_var(name);
+                    let rd = self.prepare_def_reg(dst);
+                    self.push_commented(
+                        S16Instr::lea_label(rd, name.as_str()),
+                        &assign_comment,
+                    );
+                    self.reg.bind_var_to_reg(dst.clone(), rd);
+                    self.reg.mark_dirty(dst);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let (rs, free_s) = self.ensure_in_reg(v);
 
         if dst.kind == VarKind::Global && !self.advanced_mode {
@@ -599,15 +638,27 @@ impl Codegen {
 
     fn emit_return(&mut self, value: &Option<Value>) {
         if let Some(v) = value {
-            let (rv, free_v) = self.ensure_in_reg(v);
-            if rv != Register::R1 {
-                self.push_commented(
-                    S16Instr::mov(Register::R1, rv),
-                    format!("return {}", describe_val(v)),
-                );
-            }
-            if free_v {
-                self.reg.free_reg(rv);
+            let comment = format!("return {}", describe_val(v));
+            match v {
+                Value::Imm(imm) if *imm != 0 => {
+                    self.push_commented(S16Instr::lea_imm(Register::R1, *imm), comment);
+                }
+                Value::AddrOf(name) => {
+                    self.note_user_var(name);
+                    self.push_commented(
+                        S16Instr::lea_label(Register::R1, name.as_str()),
+                        comment,
+                    );
+                }
+                _ => {
+                    let (rv, free_v) = self.ensure_in_reg(v);
+                    if rv != Register::R1 {
+                        self.push_commented(S16Instr::mov(Register::R1, rv), comment);
+                    }
+                    if free_v {
+                        self.reg.free_reg(rv);
+                    }
+                }
             }
         }
         let mut out = Vec::new();

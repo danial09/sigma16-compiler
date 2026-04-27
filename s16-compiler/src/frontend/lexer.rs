@@ -304,6 +304,6 @@ impl<'source> Iterator for LexerAdapter<'source> {
     }
 }
 
-pub fn lex_adapter(source: &str) -> LexerAdapter {
+pub fn lex_adapter(source: &str) -> LexerAdapter<'_> {
     LexerAdapter::new(source)
 }
