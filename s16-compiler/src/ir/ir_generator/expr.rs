@@ -289,19 +289,24 @@ impl Gen {
                         // treat as pointer arithmetic: *(base + index)
                         let base_v = Value::Var(this.get_var(base.clone()));
                         let index_v = this.eval_as_value(index)?;
-                        let addr_tmp = this.new_temp();
-                        this.emit(Instr::Assign {
-                            dst: addr_tmp.clone(),
-                            src: Rhs::Binary {
-                                op: ArithOp::Add,
-                                left: base_v,
-                                right: index_v,
-                            },
-                        });
+                        let addr = if matches!(index_v, Value::Imm(0)) {
+                            base_v
+                        } else {
+                            let addr_tmp = this.new_temp();
+                            this.emit(Instr::Assign {
+                                dst: addr_tmp.clone(),
+                                src: Rhs::Binary {
+                                    op: ArithOp::Add,
+                                    left: base_v,
+                                    right: index_v,
+                                },
+                            });
+                            Value::Var(addr_tmp)
+                        };
                         let tmp = this.new_temp();
                         this.emit(Instr::Load {
                             dst: tmp.clone(),
-                            addr: Value::Var(addr_tmp),
+                            addr,
                         });
                         Ok(Value::Var(tmp))
                     }

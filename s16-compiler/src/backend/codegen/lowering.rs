@@ -268,6 +268,38 @@ impl Codegen {
             self.note_user_var(&dst.name);
         }
 
+        // Optimization: reg ± nonzero-imm → single `lea rd, ±imm[rv]`
+        if !is_mod {
+            let (reg_val, imm_val): (Option<&Value>, Option<i64>) = match (op, left, right) {
+                (ArithOp::Add, v, Value::Imm(i)) if *i != 0 => (Some(v), Some(*i)),
+                (ArithOp::Add, Value::Imm(i), v) if *i != 0 => (Some(v), Some(*i)),
+                (ArithOp::Sub, v, Value::Imm(i)) if *i != 0 => (Some(v), Some(-*i)),
+                _ => (None, None),
+            };
+            if let (Some(rv_val), Some(imm)) = (reg_val, imm_val) {
+                let (rv, free_v) = self.ensure_in_reg(rv_val);
+                let rd = if free_v && rv != Register::ZERO_REG {
+                    rv
+                } else {
+                    self.prepare_def_reg(dst)
+                };
+                self.push_commented(
+                    S16Instr::Lea {
+                        d: rd,
+                        disp: Disp::Num(imm),
+                        idx: rv,
+                    },
+                    &bin_comment,
+                );
+                self.reg.bind_var_to_reg(dst.clone(), rd);
+                self.reg.mark_dirty(dst);
+                if free_v && rv != rd {
+                    self.reg.free_reg(rv);
+                }
+                return;
+            }
+        }
+
         let dst_is_left = matches!(left, Value::Var(v) if v == dst);
         let dst_is_right = matches!(right, Value::Var(v) if v == dst);
 
@@ -287,9 +319,9 @@ impl Codegen {
         } else {
             let (rl, free_l) = self.ensure_in_reg(left);
             let (rr, free_r) = self.ensure_in_reg(right);
-            let rd = if free_l {
+            let rd = if free_l && rl != Register::ZERO_REG {
                 rl
-            } else if free_r && (*op == ArithOp::Add || *op == ArithOp::Mul) {
+            } else if free_r && rr != Register::ZERO_REG && (*op == ArithOp::Add || *op == ArithOp::Mul) {
                 rr
             } else {
                 self.prepare_def_reg(dst)
