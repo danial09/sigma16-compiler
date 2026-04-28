@@ -213,7 +213,7 @@ pub enum Instr {
         ret: Option<Var>,
     },
     Return {
-        value: Option<Value>,
+        value: Option<Rhs>,
     },
     ArrayDecl {
         name: String,

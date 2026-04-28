@@ -636,29 +636,14 @@ impl Codegen {
 
     // ── Return ──────────────────────────────────────────────────────────
 
-    fn emit_return(&mut self, value: &Option<Value>) {
-        if let Some(v) = value {
-            let comment = format!("return {}", describe_val(v));
-            match v {
-                Value::Imm(imm) if *imm != 0 => {
-                    self.push_commented(S16Instr::lea_imm(Register::R1, *imm), comment);
+    fn emit_return(&mut self, value: &Option<Rhs>) {
+        if let Some(rhs) = value {
+            match rhs {
+                Rhs::Value(v) => self.emit_return_value(v),
+                Rhs::Binary { op, left, right } => {
+                    self.emit_return_binary(op, left, right);
                 }
-                Value::AddrOf(name) => {
-                    self.note_user_var(name);
-                    self.push_commented(
-                        S16Instr::lea_label(Register::R1, name.as_str()),
-                        comment,
-                    );
-                }
-                _ => {
-                    let (rv, free_v) = self.ensure_in_reg(v);
-                    if rv != Register::R1 {
-                        self.push_commented(S16Instr::mov(Register::R1, rv), comment);
-                    }
-                    if free_v {
-                        self.reg.free_reg(rv);
-                    }
-                }
+                Rhs::Unary { op, operand } => self.emit_return_unary(op, operand),
             }
         }
         let mut out = Vec::new();
@@ -668,6 +653,146 @@ impl Codegen {
             let epilogue_label = format!("ret_{}", func_name);
             self.push_asm(S16Instr::jump_label(&epilogue_label));
             self.return_jump_count += 1;
+        }
+    }
+
+    fn emit_return_value(&mut self, v: &Value) {
+        let comment = format!("return {}", describe_val(v));
+        match v {
+            Value::Imm(imm) if *imm != 0 => {
+                self.push_commented(S16Instr::lea_imm(Register::R1, *imm), comment);
+            }
+            Value::AddrOf(name) => {
+                self.note_user_var(name);
+                self.push_commented(
+                    S16Instr::lea_label(Register::R1, name.as_str()),
+                    comment,
+                );
+            }
+            _ => {
+                let (rv, free_v) = self.ensure_in_reg(v);
+                if rv != Register::R1 {
+                    self.push_commented(S16Instr::mov(Register::R1, rv), comment);
+                }
+                if free_v {
+                    self.reg.free_reg(rv);
+                }
+            }
+        }
+    }
+
+    fn emit_return_binary(&mut self, op: &ArithOp, left: &Value, right: &Value) {
+        let comment = format!(
+            "return {} {} {}",
+            describe_val(left),
+            op_sym(op),
+            describe_val(right)
+        );
+
+        let is_mod = *op == ArithOp::Mod;
+        let rd = Register::R1;
+
+        // Optimization: reg ± nonzero-imm → single `lea R1, ±imm[rv]`
+        if !is_mod {
+            let (reg_val, imm_val): (Option<&Value>, Option<i64>) = match (op, left, right) {
+                (ArithOp::Add, v, Value::Imm(i)) if *i != 0 => (Some(v), Some(*i)),
+                (ArithOp::Add, Value::Imm(i), v) if *i != 0 => (Some(v), Some(*i)),
+                (ArithOp::Sub, v, Value::Imm(i)) if *i != 0 => (Some(v), Some(-*i)),
+                _ => (None, None),
+            };
+            if let (Some(rv_val), Some(imm)) = (reg_val, imm_val) {
+                let (rv, free_v) = self.ensure_in_reg(rv_val);
+                self.push_commented(
+                    S16Instr::Lea {
+                        d: rd,
+                        disp: Disp::Num(imm),
+                        idx: rv,
+                    },
+                    comment,
+                );
+                if free_v && rv != rd {
+                    self.reg.free_reg(rv);
+                }
+                return;
+            }
+        }
+
+        let (rl, free_l) = self.ensure_in_reg(left);
+        let (rr, free_r) = self.ensure_in_reg(right);
+
+        if is_mod {
+            self.push_commented(
+                S16Instr::Div {
+                    d: Register::ZERO_REG,
+                    a: rl,
+                    b: rr,
+                },
+                format!(
+                    "{} {} {}",
+                    describe_val(left),
+                    op_sym(op),
+                    describe_val(right)
+                ),
+            );
+            self.push_commented(
+                S16Instr::Add {
+                    d: rd,
+                    a: Register::ZERO_REG,
+                    b: Register::R15,
+                },
+                comment,
+            );
+        } else {
+            let instr = match op {
+                ArithOp::Add => S16Instr::Add { d: rd, a: rl, b: rr },
+                ArithOp::Sub => S16Instr::Sub { d: rd, a: rl, b: rr },
+                ArithOp::Mul => S16Instr::Mul { d: rd, a: rl, b: rr },
+                ArithOp::Div => S16Instr::Div { d: rd, a: rl, b: rr },
+                ArithOp::Mod => unreachable!(),
+                ArithOp::BitAnd | ArithOp::BitOr | ArithOp::BitXor => {
+                    // Commutative — if the right operand is already in rd
+                    // and the left isn't, swap so the `mov rd, left` below
+                    // doesn't clobber the right operand.
+                    let (rl, rr) = if rr == rd && rl != rd {
+                        (rr, rl)
+                    } else {
+                        (rl, rr)
+                    };
+                    if rd != rl {
+                        self.push_asm(S16Instr::mov(rd, rl));
+                    }
+                    match op {
+                        ArithOp::BitAnd => S16Instr::Andw { d: rd, b: rr },
+                        ArithOp::BitOr => S16Instr::Orw { d: rd, b: rr },
+                        ArithOp::BitXor => S16Instr::Xorw { d: rd, b: rr },
+                        _ => unreachable!(),
+                    }
+                }
+            };
+            self.push_commented(instr, comment);
+        }
+
+        if free_l && rl != rd {
+            self.reg.free_reg(rl);
+        }
+        if free_r && rr != rd {
+            self.reg.free_reg(rr);
+        }
+    }
+
+    fn emit_return_unary(&mut self, op: &UnaryArithOp, operand: &Value) {
+        let comment = format!("return ~{}", describe_val(operand));
+        let (rs, free_s) = self.ensure_in_reg(operand);
+        let rd = Register::R1;
+        if rd != rs {
+            self.push_asm(S16Instr::mov(rd, rs));
+        }
+        let instr = match op {
+            UnaryArithOp::BitNot => S16Instr::Invw { d: rd },
+        };
+        self.push_commented(instr, comment);
+        if free_s && rs != rd {
+            self.reg.free_reg(rs);
         }
     }
 }

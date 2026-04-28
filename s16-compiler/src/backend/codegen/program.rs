@@ -92,7 +92,14 @@ fn collect_function_vars(instrs: &[Instr], start: usize, end: usize) -> HashSet<
                     }
                 }
             }
-            Instr::Return { value: Some(v) } => add_val(&mut vars, v),
+            Instr::Return { value: Some(rhs) } => match rhs {
+                Rhs::Value(v) => add_val(&mut vars, v),
+                Rhs::Binary { left, right, .. } => {
+                    add_val(&mut vars, left);
+                    add_val(&mut vars, right);
+                }
+                Rhs::Unary { operand, .. } => add_val(&mut vars, operand),
+            },
             Instr::Load { dst, addr } => {
                 if dst.is_reg_allocated() {
                     vars.insert(dst.clone());
