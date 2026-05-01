@@ -88,7 +88,18 @@ fn get_uses(instr: &Instr) -> Vec<Var> {
                 add_val(a);
             }
         }
-        Instr::Return { value: Some(v) } => add_val(v),
+        Instr::Return {
+            value: Some(Rhs::Value(v)),
+        } => add_val(v),
+        Instr::Return {
+            value: Some(Rhs::Binary { left, right, .. }),
+        } => {
+            add_val(left);
+            add_val(right);
+        }
+        Instr::Return {
+            value: Some(Rhs::Unary { operand, .. }),
+        } => add_val(operand),
         Instr::Load { addr, .. } => add_val(addr),
         Instr::Store { addr, src } => {
             add_val(addr);

@@ -156,11 +156,11 @@ impl Gen {
                     if let Some(ctx) = &mut this.fn_ctx {
                         ctx.had_return = true;
                     }
-                    let v = match value {
-                        Some(expr) => Some(this.eval_as_value(expr)?),
+                    let rhs = match value {
                         None => None,
+                        Some(expr) => Some(this.lower_return_expr(expr)?),
                     };
-                    this.emit(Instr::Return { value: v });
+                    this.emit(Instr::Return { value: rhs });
                     Ok(())
                 })
             }
@@ -247,6 +247,78 @@ impl Gen {
                 Ok(())
             }
         }
+    }
+
+    /// Lower the expression of a `return` statement directly into an `Rhs`,
+    /// avoiding the unnecessary `temp __t = expr; return __t` round-trip when
+    /// the top-level expression is a binary arithmetic op or a unary op.
+    /// Nested sub-expressions still produce temps via `eval_as_value` as
+    /// before.  Calls / variables / immediates fall through to a plain
+    /// `Rhs::Value` so existing return-of-variable handling (where the call's
+    /// return register R1 is reused directly) is preserved.
+    fn lower_return_expr(&mut self, e: &Expr) -> Result<Rhs, CompileError> {
+        // `return ~x` → Rhs::Unary
+        if let Expr::Unary {
+            op: crate::ir::ast::UnOp::BitNot,
+            operand,
+            ..
+        } = e
+        {
+            let v = self.eval_as_value(operand)?;
+            return Ok(Rhs::Unary {
+                op: UnaryArithOp::BitNot,
+                operand: v,
+            });
+        }
+
+        // `return -x` → Rhs::Binary { Sub, 0, x }
+        if let Expr::Unary {
+            op: crate::ir::ast::UnOp::Neg,
+            operand,
+            ..
+        } = e
+        {
+            let v = self.eval_as_value(operand)?;
+            return Ok(Rhs::Binary {
+                op: ArithOp::Sub,
+                left: Value::Imm(0),
+                right: v,
+            });
+        }
+
+        // `return a OP b` for arithmetic / bitwise ops → Rhs::Binary
+        if let Expr::Binary {
+            left, op, right, ..
+        } = e
+        {
+            if matches!(
+                op,
+                AstBinOp::Add
+                    | AstBinOp::Sub
+                    | AstBinOp::Mul
+                    | AstBinOp::Div
+                    | AstBinOp::Mod
+                    | AstBinOp::BitAnd
+                    | AstBinOp::BitOr
+                    | AstBinOp::BitXor
+            ) {
+                let l = self.eval_as_value(left)?;
+                let r = self.eval_as_value(right)?;
+                let arith_op = map_arith(*op);
+                return Ok(Rhs::Binary {
+                    op: arith_op,
+                    left: l,
+                    right: r,
+                });
+            }
+        }
+
+        // Fall back: evaluate as a leaf value (Variable, Imm, AddrOf, Call,
+        // relational/logical-as-bool, indexing, deref).  These already use
+        // R1 efficiently in their own paths (e.g., a Call's return value is
+        // already in R1 when consumed by the subsequent return).
+        let v = self.eval_as_value(e)?;
+        Ok(Rhs::Value(v))
     }
 
     pub fn lower_assign(&mut self, name: &str, rhs: &Expr) -> Result<(), CompileError> {
